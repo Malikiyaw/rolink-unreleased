@@ -1,0 +1,23 @@
+﻿# Local-only folders
+Compressed/
+Deprecated/
+ExtensionPresentation/
+presentation/
+docs/
+
+# Zip files
+*.zip
+
+# Local dev / diagnostic tools
+probe.py
+logs/
+devtools/
+mcp-server/node_modules/
+mcp-server/dist/
+rolink-extension/core/__fixtures__/
+
+# System files
+.DS_Store
+Thumbs.db
+desktop.ini
+__pycache__/
