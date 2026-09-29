@@ -199,8 +199,22 @@ describe("Task 12.10 — backward-compatibility shim", () => {
       }
     });
 
-    it("the registry still has 150 tools", () => {
-      expect(tools.length).toBe(150);
+    it("the registry still has the expected tool count", () => {
+      // This began as a Task 12.10 tripwire: "the compat shim must not add or
+      // drop tools". It was pinned at 150, but 2.11.0-2.14.0 legitimately added
+      // the GUI pipeline (9 component builders, the theme system, 7 layout
+      // templates, 4 cross-app tools). The intent - a hard pin that catches an
+      // accidental add/drop - is unchanged; only the number moved. It is also
+      // cross-checked against generated/tool-prompts.json, the authoritative
+      // catalog, so the two can never drift apart silently again.
+      expect(tools.length).toBe(213);
+      const catalog = JSON.parse(
+        readFileSync(
+          fileURLToPath(new URL("../../generated/tool-prompts.json", import.meta.url)),
+          "utf8",
+        ),
+      );
+      expect(tools.length).toBe(catalog.toolCount);
     });
   });
 });
