@@ -1,0 +1,24 @@
+{
+  "name": "RoLink Bridge",
+  "id": "rolink-bridge-figma",
+  "api": "1.0.0",
+  "main": "code.js",
+  "ui": "ui.html",
+  "editorType": ["figma"],
+  "capabilities": [],
+  "networkAccess": {
+    "reasoning": "Poll the local RoLink bridge queue (http://127.0.0.1:3001) for figma_* commands and post results back. All traffic stays on loopback; no external hosts are contacted.",
+    "allowedDomains": ["http://localhost:3001", "http://localhost:18081"],
+    "devAllowedDomains": [
+      "http://localhost:3001",
+      "http://localhost:18081"
+    ]
+  },
+  "documentAccess": "dynamic-page",
+  "menu": [
+    {
+      "name": "Open RoLink Bridge",
+      "command": "open"
+    }
+  ]
+}

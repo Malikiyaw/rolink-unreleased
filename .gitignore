@@ -1,0 +1,30 @@
+﻿# Local-only folders
+Compressed/
+Deprecated/
+ExtensionPresentation/
+presentation/
+docs/
+
+# Zip files
+*.zip
+
+# Local dev / diagnostic tools
+probe.py
+logs/
+devtools/
+mcp-server/node_modules/
+mcp-server/dist/
+rolink-extension/core/__fixtures__/
+
+# Machine-local runtime state (never shipped, never uploaded)
+memory/
+context/
+
+# Fetched on demand by scripts/check_luau_syntax.py --download
+tools/luau/
+
+# System files
+.DS_Store
+Thumbs.db
+desktop.ini
+__pycache__/

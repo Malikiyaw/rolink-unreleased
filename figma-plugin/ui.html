@@ -1,0 +1,187 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="utf-8">
+<title>RoLink Bridge</title>
+<style>
+  body { font: 13px/1.5 -apple-system, "Segoe UI", sans-serif; margin: 0; padding: 14px; color: #222; }
+  h1 { font-size: 14px; margin: 0 0 8px; }
+  .row { display: flex; align-items: center; gap: 8px; margin: 8px 0; }
+  .dot { width: 10px; height: 10px; border-radius: 50%; background: #999; flex: none; }
+  .dot.green { background: #1a7f37; }
+  .dot.yellow { background: #d4a017; }
+  .dot.red { background: #cf222e; }
+  #status { font-weight: 600; }
+  label { font-size: 12px; color: #555; display: block; margin-top: 8px; }
+  input { width: 100%; box-sizing: border-box; padding: 5px 7px; font-size: 12px;
+          border: 1px solid #ccc; border-radius: 6px; }
+  button { padding: 5px 10px; font-size: 12px; border: 1px solid #ccc; border-radius: 6px;
+           background: #f6f8fa; cursor: pointer; }
+  button:hover { background: #eef1f4; }
+  #log { font-size: 11px; color: #555; background: #f6f8fa; border: 1px solid #e1e4e8;
+         border-radius: 6px; padding: 6px 8px; height: 110px; overflow-y: auto;
+         white-space: pre-wrap; word-break: break-word; }
+  .hint { font-size: 11px; color: #777; }
+</style>
+</head>
+<body>
+<h1>RoLink Bridge <span id="ver" class="hint"></span></h1>
+<div class="row"><span id="dot" class="dot"></span><span id="status">Connecting…</span></div>
+<div class="row"><span id="last" class="hint">never polled</span></div>
+<label for="bridge">Bridge queue URL</label>
+<input id="bridge" value="http://localhost:3001" spellcheck="false">
+<div class="row">
+  <button id="reconnect">Reconnect</button>
+  <button id="poll-now">Poll now</button>
+</div>
+<label>Activity</label>
+<div id="log"></div>
+<p class="hint">Keep this plugin open while using figma_* tools.
+Desktop app required — Figma web may block localhost fetch.</p>
+<script>
+// SPDX-License-Identifier: GPL-3.0-or-later
+// figma-plugin/ui.html — owns bridge polling (the iframe has reliable fetch;
+// the sandbox fetch surface varies by host). Forwards commands to code.js via
+// plugin messages, base64-encodes exports, POSTs results to the bridge.
+var PLUGIN_VERSION = "1.1.0";
+var POLL_MS = 200;
+var executing = false;      // single-flight guard (mirrors __RL_BUSY)
+var lastPollOk = 0;
+var seq = 0;
+var pending = {};           // execute-id -> {cmdId, tool}
+
+document.getElementById("ver").textContent = "v" + PLUGIN_VERSION;
+
+function bridgeBase() {
+  var v = (document.getElementById("bridge").value || "").trim();
+  return v.replace(/\/+$/, "") || "http://127.0.0.1:3001";
+}
+function setStatus(cls, text) {
+  document.getElementById("dot").className = "dot " + cls;
+  document.getElementById("status").textContent = text;
+}
+function logLine(s) {
+  var el = document.getElementById("log");
+  var t = new Date().toLocaleTimeString();
+  el.textContent = (t + " " + s + "\n" + el.textContent).slice(0, 3000);
+}
+
+function bytesToB64(arr) {
+  // Chunked to avoid stack overflow on large exports.
+  var s = "";
+  var CH = 8192;
+  for (var i = 0; i < arr.length; i += CH) {
+    s += String.fromCharCode.apply(null, arr.slice(i, i + CH));
+  }
+  return btoa(s);
+}
+
+async function postResult(cmdId, result, error) {
+  try {
+    await fetch(bridgeBase() + "/queue/result", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ id: cmdId, result: result || null, error: error || null,
+                             timings: { pluginVersion: PLUGIN_VERSION } }),
+    });
+  } catch (e) {
+    logLine("result POST failed: " + e);
+  }
+}
+
+async function pollOnce() {
+  if (executing) return;
+  var url = bridgeBase() + "/queue/next?client=figma&projectId=&pv=" + encodeURIComponent(PLUGIN_VERSION);
+  var res;
+  try {
+    res = await fetch(url);
+  } catch (e) {
+    var msg = String((e && e.message) || e);
+    setStatus("red", "Bridge offline — run start.bat");
+    logLine("fetch failed: " + msg.slice(0, 160));
+    document.getElementById("last").textContent = "fetch error: " + msg.slice(0, 120);
+    return;
+  }
+  if (!res.ok) {
+    setStatus("yellow", "Bridge error " + res.status);
+    return;
+  }
+  var body;
+  try { body = await res.json(); } catch (e) { return; }
+  lastPollOk = Date.now();
+  document.getElementById("last").textContent =
+    "last poll " + new Date().toLocaleTimeString();
+  var cmd = body && body.command;
+  if (!cmd) {
+    setStatus("green", "Connected — waiting for commands");
+    return;
+  }
+  executing = true;
+  setStatus("yellow", "Executing " + (cmd.tool || "?") + "…");
+  logLine("exec " + (cmd.id || "?") + " " + (cmd.tool || "?"));
+  var execId = "ex_" + (++seq) + "_" + Date.now();
+  pending[execId] = { cmdId: cmd.id, tool: cmd.tool };
+  // Forward to the sandbox for Figma API execution.
+  parent.postMessage({ pluginMessage: { type: "execute", id: execId,
+    tool: cmd.tool, args: cmd.args || {} } }, "*");
+  // Watchdog: if the sandbox never replies, release single-flight.
+  setTimeout(function () {
+    if (pending[execId]) {
+      delete pending[execId];
+      executing = false;
+      postResult(cmd.id, null, "figma plugin timeout waiting for sandbox reply");
+      setStatus("yellow", "Sandbox timeout — retrying");
+    }
+  }, 25000);
+}
+
+onmessage = async function (ev) {
+  var msg = ev.data && ev.data.pluginMessage;
+  if (!msg || msg.type !== "result") return;
+  var p = pending[msg.id];
+  if (!p) return;
+  delete pending[msg.id];
+  executing = false;
+  var result = msg.result || null;
+  // Export bytes arrive as a number array; base64 them for the bridge. The
+  // bridge /queue/result cap is 10MB — refuse absurd exports early.
+  if (result && Array.isArray(result.bytes)) {
+    if (result.bytes.length > 8 * 1024 * 1024) {
+      await postResult(p.cmdId, null, "export too large (" +
+        result.bytes.length + " bytes) — lower scale");
+      setStatus("green", "Connected — waiting for commands");
+      return;
+    }
+    try {
+      var b64 = bytesToB64(result.bytes);
+      result.bytesB64 = b64;
+      delete result.bytes;
+      result.byteLength = b64.length;
+    } catch (e) {
+      await postResult(p.cmdId, null, "base64 encode failed: " + e);
+      return;
+    }
+  }
+  if (msg.error) {
+    logLine("error " + p.tool + ": " + String(msg.error).slice(0, 160));
+    await postResult(p.cmdId, null, String(msg.error).slice(0, 2000));
+  } else {
+    logLine("ok " + p.tool);
+    await postResult(p.cmdId, result, null);
+  }
+  setStatus("green", "Connected — waiting for commands");
+};
+
+document.getElementById("reconnect").onclick = function () {
+  executing = false;
+  logLine("reconnect requested");
+  pollOnce();
+};
+document.getElementById("poll-now").onclick = function () { pollOnce(); };
+
+setStatus("yellow", "Connecting…");
+setInterval(pollOnce, POLL_MS);
+pollOnce();
+</script>
+</body>
+</html>
