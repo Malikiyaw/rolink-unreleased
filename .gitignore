@@ -1,0 +1,28 @@
+# Local-only folders
+Compressed/
+Deprecated/
+ExtensionPresentation/
+presentation/
+docs/
+
+# Zip files
+*.zip
+
+# Local dev / diagnostic tools
+probe.py
+logs/
+devtools/
+mcp-server/node_modules/
+mcp-server/dist/
+rolink-extension/core/__fixtures__/
+
+# System files
+.DS_Store
+Thumbs.db
+desktop.ini
+__pycache__/
+.pytest_cache/
+
+# Runtime project state (local): the model graph holds the user's real
+# import ids and revision history and must never be published.
+memory/

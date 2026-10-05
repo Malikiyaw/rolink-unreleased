@@ -1,0 +1,117 @@
+<!doctype html><meta charset="utf-8"><title>RoLink Settings</title>
+<style>
+:root{
+  --bg:#0e1116;--panel:#161b22;--border:#262d36;--text:#e6edf3;--muted:#8b949e;
+  --green:#3fb950;--yellow:#d29922;--red:#f85149;--accent:#2f81f7;
+}
+*{box-sizing:border-box}
+body{font:14px system-ui,-apple-system,Segoe UI,Roboto,sans-serif;max-width:720px;margin:0 auto;padding:32px 20px;background:var(--bg);color:var(--text)}
+header{display:flex;align-items:center;gap:14px;margin-bottom:28px;padding-bottom:20px;border-bottom:1px solid var(--border)}
+.logo{width:48px;height:48px;border-radius:12px;background:linear-gradient(135deg,#2f81f7,#3fb950);display:flex;align-items:center;justify-content:center;font-weight:700;font-size:22px;color:#fff;box-shadow:0 4px 12px rgba(47,129,247,.3)}
+h1{margin:0;font-size:22px;font-weight:600}.sub{font-size:12px;color:var(--muted);margin-top:2px}
+.badge{display:inline-block;padding:3px 8px;border-radius:6px;background:#1f6feb22;color:#58a6ff;font-size:10px;font-weight:600;margin-left:8px;border:1px solid #1f6feb44}
+section{background:var(--panel);border:1px solid var(--border);border-radius:12px;padding:20px;margin-bottom:16px}
+section h2{margin:0 0 4px;font-size:14px;font-weight:600;color:var(--text);display:flex;align-items:center;gap:8px}
+section h2 .ico{width:20px;height:20px;display:inline-flex;align-items:center;justify-content:center;background:#1f6feb22;border-radius:6px;font-size:12px}
+section .desc{color:var(--muted);font-size:12px;margin:0 0 16px}
+label{display:block;margin:12px 0}
+label .lk{display:block;font-size:12px;color:var(--muted);margin-bottom:6px;font-weight:500}
+input,select{width:100%;padding:10px 12px;border-radius:8px;border:1px solid var(--border);background:#0d1117;color:var(--text);font:13px ui-monospace,Menlo,Consolas,monospace;transition:border-color .15s}
+input:focus,select:focus{outline:none;border-color:var(--accent);box-shadow:0 0 0 3px #1f6feb22}
+.row{display:flex;gap:10px;align-items:center;margin-top:16px}
+button{padding:10px 18px;border-radius:8px;border:1px solid var(--border);background:var(--panel);color:var(--text);cursor:pointer;font-size:13px;font-weight:500;transition:all .15s}
+button:hover{background:#1f2630;border-color:#3a424d}
+button.primary{background:var(--accent);border-color:var(--accent);color:#fff}
+button.primary:hover{background:#1f6feb}
+button.danger{background:#21262d;border-color:#da3633;color:var(--red)}
+.status{margin-left:auto;font-size:12px;color:var(--muted);min-width:80px;text-align:right}
+.status.ok{color:var(--green)}
+.status.err{color:var(--red)}
+.kbd{font-family:ui-monospace,Menlo,Consolas,monospace;background:#0d1117;border:1px solid var(--border);border-radius:4px;padding:2px 6px;font-size:11px}
+.footer{text-align:center;color:var(--muted);font-size:11px;margin-top:24px;padding-top:20px;border-top:1px solid var(--border)}
+.cat-row{display:flex;align-items:center;gap:10px;padding:7px 10px;border:1px solid var(--border);border-radius:8px;margin:6px 0;background:#0d1117;cursor:pointer}
+.cat-row:hover{border-color:#3a424d}
+.cat-row input{width:auto;margin:0;accent-color:var(--accent)}
+.cat-dot{width:10px;height:10px;border-radius:50%;flex:none}
+.cat-row .cn{font-weight:600;font-size:13px}
+.cat-row .cd{margin-left:auto;font-size:11px;color:var(--muted)}
+.sub-label{font-size:11px;font-weight:600;text-transform:uppercase;letter-spacing:.6px;color:var(--muted);margin:18px 0 8px}
+.preset{padding:12px;background:#0d1117;border:1px solid var(--border);border-radius:8px;margin:8px 0}
+.preset.installed{border-color:#2ea04355}
+.preset-top{display:flex;align-items:center;gap:10px}
+.preset-name{font-weight:600;font-size:13px}
+.preset-badge{font-size:10px;padding:2px 7px;border-radius:10px;border:1px solid var(--border);color:var(--muted)}
+.preset-badge.on{color:var(--green);border-color:#2ea04366}
+.preset-badge.off{color:var(--yellow);border-color:#d2992266}
+.preset-cmd{font-family:ui-monospace,Menlo,Consolas,monospace;font-size:11px;color:var(--muted);margin:8px 0 0;word-break:break-all}
+.preset-note{font-size:11px;color:var(--muted);margin:6px 0 0}
+.preset-note.warn{color:var(--yellow)}
+.preset-actions{margin-top:10px;display:flex;align-items:center;gap:8px}
+.preset-actions button{padding:6px 14px;font-size:12px}
+.preset-actions .status{margin-left:auto}
+</style>
+<header>
+  <div class="logo">R</div>
+  <div>
+    <h1>RoLink Settings <span class="badge" id="ver">v2.11.0</span></h1>
+    <div class="sub">AI to Roblox Studio bridge</div>
+  </div>
+</header>
+
+<section>
+  <h2><span class="ico">⚡</span> Endpoints</h2>
+  <p class="desc">Where the extension looks for the local bridge. Defaults work for most setups.</p>
+  <label><span class="lk">Bridge WebSocket URL</span><input id="bridge" value="ws://127.0.0.1:17613"></label>
+  <label><span class="lk">MCP HTTP URL (optional, for advanced tools)</span><input id="mcp" value="http://127.0.0.1:3001"></label>
+  <div class="row">
+    <button class="primary" id="save">Save changes</button>
+    <button id="reset">Reset to defaults</button>
+    <span class="status" id="status"></span>
+  </div>
+</section>
+
+<section>
+  <h2><span class="ico">⌨</span> Keyboard shortcuts</h2>
+  <p class="desc">Open the RoLink popup from anywhere with a single key combo.</p>
+  <div class="row" style="margin:0">
+    <span>Open RoLink popup</span>
+    <span class="kbd" style="margin-left:auto">Ctrl + Shift + R</span>
+  </div>
+  <p class="desc" style="margin-top:10px">You can rebind this in <code>chrome://extensions/shortcuts</code>.</p>
+</section>
+
+<section>
+  <h2><span class="ico">⚙</span> MCP servers (multi-server)</h2>
+  <p class="desc">Add or remove MCP servers the bridge should spawn. The default <code>roblox</code> server is managed by the bridge itself and cannot be removed from here.</p>
+  <p class="desc"><strong>Blender setup:</strong> install <code>uv</code>, add the reviewed Blender preset below, then install/enable the MCP for Blender addon and start its server from Blender. The preset is safe-mode + telemetry-disabled and loopback-only (<code>localhost:9876</code>); it never changes a <code>.blend</code> file for you.</p>
+  <div class="sub-label">Ready-made servers</div>
+  <p class="desc">Reviewed setups pinned to the project's own documented command. Nothing is installed or launched until you click Add &mdash; RoLink never adds one of these by itself. Blender's commands are namespaced <code>blender/*</code>, so they can never collide with a Roblox command.</p>
+  <div id="mcpPresets"></div>
+  <div class="sub-label">Configured servers</div>
+  <div id="mcpServerList"></div>
+  <div class="row" style="margin-top:8px">
+    <input id="newServerId" placeholder="server id (e.g. context7)" style="flex:1">
+    <input id="newServerCmd" placeholder="command (e.g. npx)" style="flex:1">
+    <input id="newServerArgs" placeholder="args (e.g. -y @upstash/context7-mcp)" style="flex:2">
+    <button class="primary" id="addServer">Add</button>
+  </div>
+  <div class="row" style="margin-top:4px">
+    <input id="newServerEnv" placeholder="optional env (KEY=value,KEY2=value2)" style="flex:1">
+    <span class="status" id="mcpStatus"></span>
+  </div>
+</section>
+
+<section>
+  <h2><span class="ico">🎛</span> HUD categories</h2>
+  <p class="desc">Show or hide tool families in the Side Dock feed and the Bottom Timeline filmstrip. The Ctrl+K palette browser and the in-Studio hologram HUD always show everything.</p>
+  <div id="catToggles"></div>
+</section>
+
+<section>
+  <h2><span class="ico">ℹ</span> About</h2>
+  <p class="desc">RoLink turns 12 AI chat sites (DeepSeek, ChatGPT, Gemini, Kimi, GLM, Qwen, Arena, Arena Agent, Meta, Claude, HF Chat, Dola) into a Roblox Studio agent via a local bridge + MCP.</p>
+  <p class="desc">Settings are stored in <code>chrome.storage.local</code>. No account, no telemetry.</p>
+</section>
+
+<div class="footer">MIT / GPL-3.0-or-later — Made for Roblox developers</div>
+<script src="options.js"></script>

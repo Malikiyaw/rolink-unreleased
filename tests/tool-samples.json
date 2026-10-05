@@ -1,0 +1,830 @@
+{
+  "get_instances": {
+    "path": "test",
+    "projectId": "test"
+  },
+  "create_instance": {
+    "className": "test",
+    "parent": "test",
+    "name": "test",
+    "properties": {
+      "key": null
+    },
+    "projectId": "test"
+  },
+  "set_properties": {
+    "path": "test",
+    "properties": {
+      "key": null
+    },
+    "projectId": "test"
+  },
+  "delete_instance": {
+    "path": "test",
+    "projectId": "test"
+  },
+  "clone_instance": {
+    "path": "test",
+    "newName": "test",
+    "parent": "test",
+    "projectId": "test"
+  },
+  "move_instance": {
+    "path": "test",
+    "newParent": "test",
+    "projectId": "test"
+  },
+  "find_instance": {
+    "query": "test",
+    "searchType": "name",
+    "projectId": "test"
+  },
+  "execute_luau": {
+    "code": "test",
+    "timeoutMs": 1,
+    "projectId": "test",
+    "datamodel_type": "test",
+    "studio_id": "test"
+  },
+  "get_script_content": {
+    "path": "test",
+    "projectId": "test"
+  },
+  "set_script_content": {
+    "path": "test",
+    "content": "test",
+    "projectId": "test"
+  },
+  "create_module": {
+    "path": "test",
+    "exports": "test",
+    "projectId": "test"
+  },
+  "run_function": {
+    "path": "test",
+    "functionName": "test",
+    "args": [
+      null
+    ],
+    "projectId": "test"
+  },
+  "add_event_handler": {
+    "path": "test",
+    "event": "test",
+    "handlerCode": "test",
+    "projectId": "test"
+  },
+  "remove_event_handler": {
+    "path": "test",
+    "event": "test",
+    "projectId": "test"
+  },
+  "get_global_variables": {
+    "projectId": "test"
+  },
+  "take_snapshot": {
+    "label": "test",
+    "projectId": "test"
+  },
+  "rollback": {
+    "projectId": "test",
+    "steps": 1,
+    "snapshotId": "test"
+  },
+  "diff_snapshots": {
+    "fromId": "test",
+    "toId": "test",
+    "projectId": "test"
+  },
+  "run_in_sandbox": {
+    "code": "test",
+    "projectId": "test"
+  },
+  "confirm_sandbox_apply": {
+    "sandboxId": "test",
+    "projectId": "test"
+  },
+  "discard_sandbox": {
+    "sandboxId": "test",
+    "projectId": "test"
+  },
+  "simulate_ticks": {
+    "seconds": 1,
+    "projectId": "test"
+  },
+  "get_context_summary": {
+    "projectId": "test",
+    "maxDepth": 1
+  },
+  "get_function_signatures": {
+    "path": "test",
+    "projectId": "test"
+  },
+  "get_property_value": {
+    "path": "test",
+    "property": "test",
+    "projectId": "test"
+  },
+  "get_all_properties": {
+    "path": "test",
+    "projectId": "test"
+  },
+  "search_by_attribute": {
+    "attribute": "test",
+    "value": null,
+    "projectId": "test"
+  },
+  "get_referenced_instances": {
+    "path": "test",
+    "projectId": "test"
+  },
+  "resolve_path": {
+    "path": "test",
+    "projectId": "test"
+  },
+  "ensure_path": {
+    "path": "test",
+    "projectId": "test"
+  },
+  "get_dependency_graph": {
+    "projectId": "test"
+  },
+  "suggest_ordering": {
+    "items": [
+      "test"
+    ],
+    "projectId": "test"
+  },
+  "validate_command": {
+    "tool": "test",
+    "args": {
+      "key": null
+    }
+  },
+  "get_performance_stats": {
+    "projectId": "test",
+    "limit": 1
+  },
+  "analyze_performance": {
+    "code": "test"
+  },
+  "set_performance_threshold": {
+    "thresholdMs": 1,
+    "projectId": "test"
+  },
+  "get_memory_usage": {
+    "projectId": "test"
+  },
+  "generate_terrain": {
+    "size": 1,
+    "seed": 1,
+    "projectId": "test"
+  },
+  "set_terrain_region": {
+    "min": null,
+    "max": null,
+    "material": "test",
+    "projectId": "test"
+  },
+  "place_parts": {
+    "pattern": "grid",
+    "count": 1,
+    "parent": "test",
+    "projectId": "test"
+  },
+  "create_model_from_table": {
+    "name": "test",
+    "parts": [
+      {
+        "className": "test",
+        "properties": {
+          "key": null
+        }
+      }
+    ],
+    "parent": "test",
+    "projectId": "test"
+  },
+  "apply_material": {
+    "material": "test",
+    "region": "test",
+    "projectId": "test"
+  },
+  "create_ui": {
+    "name": "test",
+    "elements": [
+      null
+    ],
+    "projectId": "test"
+  },
+  "set_ui_property": {
+    "path": "test",
+    "property": "test",
+    "value": null,
+    "projectId": "test"
+  },
+  "get_ui_tree": {
+    "projectId": "test"
+  },
+  "bind_ui_click": {
+    "path": "test",
+    "handlerCode": "test",
+    "projectId": "test"
+  },
+  "create_animation_track": {
+    "name": "test",
+    "keyframes": [
+      null
+    ],
+    "projectId": "test"
+  },
+  "create_motion_animation": {
+    "target": "workspace.Rig",
+    "name": "test",
+    "keyframes": [
+      {
+        "time": 0,
+        "poses": [
+          {
+            "part": "HumanoidRootPart",
+            "position": {
+              "x": 0,
+              "y": 0,
+              "z": 0
+            },
+            "rotation": {
+              "x": 0,
+              "y": 0,
+              "z": 0
+            }
+          }
+        ]
+      },
+      {
+        "time": 1,
+        "poses": [
+          {
+            "part": "HumanoidRootPart",
+            "position": {
+              "x": 0,
+              "y": 4,
+              "z": 0
+            },
+            "rotation": {
+              "x": 0,
+              "y": 0,
+              "z": 0
+            }
+          }
+        ]
+      }
+    ],
+    "projectId": "test"
+  },
+  "play_animation": {
+    "target": "test",
+    "animationId": "test",
+    "projectId": "test"
+  },
+  "set_lighting": {
+    "properties": {
+      "key": null
+    },
+    "projectId": "test"
+  },
+  "add_particle_emitter": {
+    "path": "test",
+    "properties": {
+      "key": null
+    },
+    "projectId": "test"
+  },
+  "setup_datastore": {
+    "name": "test",
+    "schema": {
+      "key": null
+    },
+    "projectId": "test"
+  },
+  "get_datastore_value": {
+    "store": "test",
+    "key": "test",
+    "projectId": "test"
+  },
+  "set_datastore_value": {
+    "store": "test",
+    "key": "test",
+    "value": null,
+    "projectId": "test"
+  },
+  "export_session_log": {
+    "projectId": "test",
+    "limit": 1
+  },
+  "replay_session": {
+    "sessionId": "test",
+    "projectId": "test"
+  },
+  "list_sessions": {
+    "limit": 1
+  },
+  "compare_sessions": {
+    "a": "test",
+    "b": "test"
+  },
+  "list_templates": {
+    "category": "test"
+  },
+  "apply_template": {
+    "id": "test",
+    "projectId": "test"
+  },
+  "add_template": {
+    "id": "test",
+    "name": "test",
+    "description": "test",
+    "category": "test",
+    "code": "test"
+  },
+  "get_time": {},
+  "send_notification": {
+    "message": "test",
+    "type": "info",
+    "projectId": "test"
+  },
+  "batch_queue": {
+    "commands": [
+      {
+        "tool": "test",
+        "args": {
+          "key": null
+        }
+      }
+    ],
+    "projectId": "test"
+  },
+  "cancel_command": {
+    "id": "test"
+  },
+  "train_model": {
+    "projectId": "test"
+  },
+  "compile_visual_graph": {
+    "graph": {
+      "nodes": [
+        null
+      ],
+      "edges": [
+        null
+      ]
+    },
+    "projectId": "test"
+  },
+  "generate_test": {
+    "code": "test",
+    "projectId": "test"
+  },
+  "run_tests": {
+    "projectId": "test"
+  },
+  "session_users": {
+    "projectId": "test"
+  },
+  "search_asset": {
+    "keyword": "test",
+    "limit": 1,
+    "category": "Model"
+  },
+  "import_asset": {
+    "assetId": 1,
+    "parent": "test",
+    "projectId": "test"
+  },
+  "report_metrics": {
+    "projectId": "test",
+    "deathsPerMinute": 1,
+    "avgFPS": 1,
+    "killDeathRatio": 1,
+    "completionTimeSec": 1,
+    "coinsPerMin": 1,
+    "activePlayers": 1
+  },
+  "get_metrics": {
+    "projectId": "test",
+    "limit": 1
+  },
+  "git_commit": {
+    "message": "test",
+    "files": [
+      "test"
+    ]
+  },
+  "git_log": {
+    "limit": 1
+  },
+  "git_rollback": {
+    "commit": "test",
+    "projectId": "test"
+  },
+  "predict_bug": {
+    "code": "test",
+    "projectId": "test"
+  },
+  "plan_game": {
+    "prompt": "test"
+  },
+  "execute_plan": {
+    "prompt": "test",
+    "projectId": "test"
+  },
+  "review_code": {
+    "code": "test"
+  },
+  "refactor_code": {
+    "code": "test",
+    "projectId": "test"
+  },
+  "generate_asset": {
+    "prompt": "test",
+    "kind": "model",
+    "projectId": "test"
+  },
+  "optimize_performance": {
+    "projectId": "test",
+    "snapshot": "test"
+  },
+  "report_analytics": {
+    "projectId": "test",
+    "event": "test",
+    "value": 1,
+    "metadata": {
+      "key": null
+    }
+  },
+  "get_analytics": {
+    "projectId": "test"
+  },
+  "suggest_design": {
+    "projectId": "test"
+  },
+  "list_plugins": {},
+  "load_plugin": {
+    "name": "test",
+    "code": "test"
+  },
+  "set_breakpoint": {
+    "path": "test",
+    "line": 1,
+    "condition": "test",
+    "projectId": "test"
+  },
+  "remove_breakpoint": {
+    "path": "test",
+    "line": 1,
+    "projectId": "test"
+  },
+  "watch_variable": {
+    "path": "test",
+    "variable": "test",
+    "projectId": "test"
+  },
+  "step_through": {
+    "path": "test",
+    "steps": 1,
+    "projectId": "test"
+  },
+  "continue_execution": {
+    "path": "test",
+    "projectId": "test"
+  },
+  "generate_level": {
+    "prompt": "test",
+    "constraints": {
+      "key": null
+    },
+    "projectId": "test"
+  },
+  "get_projects": {},
+  "switch_project": {
+    "projectId": "test"
+  },
+  "create_project": {
+    "projectId": "test",
+    "template": "test"
+  },
+  "get_suggestions": {
+    "context": "test",
+    "projectId": "test"
+  },
+  "run_playtest": {
+    "projectId": "test",
+    "durationSec": 1
+  },
+  "export_project": {
+    "projectId": "test"
+  },
+  "import_project": {
+    "archive": "test",
+    "projectId": "test"
+  },
+  "generate_quest": {
+    "theme": "test",
+    "difficulty": "test",
+    "projectId": "test"
+  },
+  "simulate_economy": {
+    "config": {
+      "key": null
+    },
+    "iterations": 1,
+    "projectId": "test"
+  },
+  "suggest_balance": {
+    "projectId": "test"
+  },
+  "explain_code": {
+    "code": "test",
+    "path": "test",
+    "projectId": "test"
+  },
+  "learning_mode": {
+    "enabled": true,
+    "projectId": "test"
+  },
+  "adjust_difficulty": {
+    "projectId": "test",
+    "metrics": {
+      "key": null
+    }
+  },
+  "set_difficulty_profile": {
+    "profile": "easy",
+    "projectId": "test"
+  },
+  "generate_sound": {
+    "prompt": "test",
+    "type": "sfx",
+    "projectId": "test"
+  },
+  "generate_sound_pack": {
+    "prompt": "test",
+    "count": 1,
+    "type": "sfx"
+  },
+  "play_sound": {
+    "path": "test",
+    "soundId": "test",
+    "projectId": "test"
+  },
+  "get_animation_info": {
+    "animationId": "test",
+    "projectId": "test"
+  },
+  "delete_animation": {
+    "animationId": "test",
+    "projectId": "test"
+  },
+  "create_cutscene": {
+    "name": "test",
+    "projectId": "test",
+    "shots": [
+      {
+        "camera": {
+          "lookAt": {
+            "x": 0,
+            "y": 0,
+            "z": 0
+          },
+          "position": {
+            "x": 0,
+            "y": 0,
+            "z": 0
+          }
+        },
+        "duration": 1
+      }
+    ]
+  },
+  "create_dialogue": {
+    "lines": [
+      {
+        "speaker": "test",
+        "text": "test"
+      }
+    ],
+    "npcPath": "test",
+    "projectId": "test"
+  },
+  "create_motion_effect": {
+    "duration": 1,
+    "effect": "test",
+    "path": "test",
+    "projectId": "test"
+  },
+  "inspect_motion_effect": {
+    "name": "test",
+    "projectId": "test"
+  },
+  "remove_motion_effect": {
+    "name": "test",
+    "confirm": true,
+    "projectId": "test"
+  },
+  "create_vfx": {
+    "effect": "test",
+    "parent": "test",
+    "projectId": "test"
+  },
+  "export_animation_clip": {
+    "projectId": "test",
+    "trackPath": "test"
+  },
+  "publish_animation": {
+    "action": "test",
+    "assetId": "test",
+    "projectId": "test"
+  },
+  "scan_errors": {
+    "limit": 30,
+    "projectId": "test"
+  },
+  "inspect_ui": {
+    "root": "StarterGui",
+    "maxDepth": 4,
+    "projectId": "test"
+  },
+  "screenshot_studio": {
+    "projectId": "test"
+  },
+  "playtest_scenario": {
+    "scenario": "test",
+    "seconds": 5,
+    "expect": "test",
+    "projectId": "test"
+  },
+  "migrate_system": {
+    "system": "test",
+    "goal": "test",
+    "sources": [
+      "test"
+    ],
+    "plan_only": true,
+    "projectId": "test"
+  },
+  "analyze_animatable_model": {
+    "target": "test",
+    "projectId": "test"
+  },
+  "create_model_animation": {
+    "target": "test",
+    "name": "test",
+    "duration": 1,
+    "fps": 30,
+    "projectId": "test"
+  },
+  "inspect_motion_animation": {
+    "name": "test",
+    "projectId": "test"
+  },
+  "validate_motion_animation": {
+    "name": "test",
+    "projectId": "test"
+  },
+  "preview_motion_animation": {
+    "name": "test",
+    "step": 0.1,
+    "projectId": "test"
+  },
+  "remove_motion_animation": {
+    "name": "test",
+    "confirm": true,
+    "projectId": "test"
+  },
+  "set_model_keyframe": {
+    "anim": "test",
+    "track": "test",
+    "t": 0.25,
+    "pose": {
+      "rotation": {
+        "x": 0,
+        "y": 30,
+        "z": 0
+      }
+    },
+    "ease": "test",
+    "projectId": "test"
+  },
+  "set_model_easing": {
+    "anim": "test",
+    "track": "test",
+    "keyIndex": 1,
+    "ease": "test",
+    "projectId": "test"
+  },
+  "add_animation_marker": {
+    "anim": "test",
+    "t": 0.28,
+    "name": "test",
+    "event": "test",
+    "projectId": "test"
+  },
+  "preview_model_animation": {
+    "anim": "test",
+    "step": 0.1,
+    "projectId": "test"
+  },
+  "validate_model_animation": {
+    "anim": "test",
+    "projectId": "test"
+  },
+  "retime_animation": {
+    "anim": "test",
+    "scale": 1,
+    "projectId": "test"
+  },
+  "reverse_animation": {
+    "anim": "test",
+    "projectId": "test"
+  },
+  "mirror_animation": {
+    "anim": "test",
+    "projectId": "test"
+  },
+  "blend_animation": {
+    "base": "test",
+    "overlay": "test",
+    "weight": 0.5,
+    "newName": "test",
+    "projectId": "test"
+  },
+  "fix_animation": {
+    "anim": "test",
+    "projectId": "test"
+  },
+  "create_attack_animation": {
+    "target": "test",
+    "name": "test",
+    "tracks": [
+      "test"
+    ],
+    "projectId": "test"
+  },
+  "create_idle_animation": {
+    "target": "test",
+    "name": "test",
+    "tracks": [
+      "test"
+    ],
+    "projectId": "test"
+  },
+  "create_walk_cycle": {
+    "target": "test",
+    "name": "test",
+    "tracks": [
+      "test"
+    ],
+    "projectId": "test"
+  },
+  "set_track_lock": {
+    "anim": "test",
+    "track": "test",
+    "locked": true,
+    "projectId": "test"
+  },
+  "preview_cutscene": {
+    "name": "test",
+    "projectId": "test"
+  },
+  "validate_cutscene": {
+    "name": "test",
+    "projectId": "test"
+  },
+  "remove_cutscene": {
+    "name": "test",
+    "confirm": true,
+    "projectId": "test"
+  },
+  "run_task": {
+    "goal": "test",
+    "steps": [
+      {
+        "id": "t",
+        "tool": "test"
+      }
+    ],
+    "projectId": "test"
+  },
+  "import_distinctus_build": {
+    "source": "test",
+    "parent": "workspace",
+    "plan_only": true,
+    "projectId": "test"
+  },
+  "revise_import": {
+    "importId": "imp-0000-000000",
+    "projectId": "test"
+  },
+  "get_model_graph": {
+    "projectId": "test"
+  }
+}

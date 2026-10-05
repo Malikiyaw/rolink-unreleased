@@ -1,0 +1,323 @@
+{
+  "manifest_version": 3,
+  "name": "RoLink Free \u00d7 Roblox Studio Agent",
+  "version": "2.11.0",
+  "description": "Turn ChatGPT, DeepSeek, Gemini, Kimi, GLM, Qwen, Arena or Meta AI into a Roblox Studio agent that drives Studio through a local bridge.",
+  "permissions": [
+    "storage"
+  ],
+  "host_permissions": [
+    "https://chat.deepseek.com/*",
+    "https://deepseek.com/*",
+    "https://chatgpt.com/*",
+    "https://chat.openai.com/*",
+    "https://gemini.google.com/*",
+    "https://www.kimi.ai/*",
+    "https://kimi.ai/*",
+    "https://chat.z.ai/*",
+    "https://chat.qwen.ai/*",
+    "https://arena.ai/*",
+    "https://lmarena.ai/*",
+    "https://www.meta.ai/*",
+    "https://meta.ai/*",
+    "https://claude.ai/*",
+    "https://huggingface.co/*",
+    "https://dola.com/*",
+    "https://www.dola.com/*",
+    "http://127.0.0.1/*",
+    "ws://127.0.0.1/*"
+  ],
+  "background": {
+    "service_worker": "background.js"
+  },
+  "options_ui": {
+    "page": "options.html",
+    "open_in_tab": true
+  },
+  "icons": {
+    "16": "icon.png",
+    "48": "icon.png",
+    "128": "icon.png"
+  },
+  "action": {
+    "default_popup": "popup.html",
+    "default_title": "RoLink Free",
+    "default_icon": {
+      "16": "icon.png",
+      "48": "icon.png",
+      "128": "icon.png"
+    }
+  },
+  "content_scripts": [
+    {
+      "matches": [
+        "https://chat.deepseek.com/*",
+        "https://deepseek.com/*"
+      ],
+      "js": [
+        "core/config.js",
+        "core/tool-events.js",
+        "core/code-fields.js",
+        "core/parser.js",
+        "providers/deepseek.js",
+        "ui/build-panel.js",
+        "core/main.js"
+      ],
+      "css": [
+        "overlay.css"
+      ],
+      "run_at": "document_idle"
+    },
+    {
+      "matches": [
+        "https://chatgpt.com/*",
+        "https://chat.openai.com/*"
+      ],
+      "js": [
+        "providers/chatgpt-cm.js"
+      ],
+      "world": "MAIN",
+      "run_at": "document_start"
+    },
+    {
+      "matches": [
+        "https://chatgpt.com/*",
+        "https://chat.openai.com/*"
+      ],
+      "js": [
+        "core/config.js",
+        "core/tool-events.js",
+        "core/code-fields.js",
+        "core/parser.js",
+        "providers/chatgpt.js",
+        "ui/build-panel.js",
+        "core/main.js"
+      ],
+      "css": [
+        "overlay.css"
+      ],
+      "run_at": "document_idle"
+    },
+    {
+      "matches": [
+        "https://gemini.google.com/*"
+      ],
+      "js": [
+        "core/config.js",
+        "core/tool-events.js",
+        "core/code-fields.js",
+        "core/parser.js",
+        "providers/gemini.js",
+        "ui/build-panel.js",
+        "core/main.js"
+      ],
+      "css": [
+        "overlay.css"
+      ],
+      "run_at": "document_idle"
+    },
+    {
+      "matches": [
+        "https://www.kimi.ai/*",
+        "https://kimi.ai/*"
+      ],
+      "js": [
+        "core/config.js",
+        "core/tool-events.js",
+        "core/code-fields.js",
+        "core/parser.js",
+        "providers/kimi.js",
+        "ui/build-panel.js",
+        "core/main.js"
+      ],
+      "css": [
+        "overlay.css"
+      ],
+      "run_at": "document_idle"
+    },
+    {
+      "matches": [
+        "https://chat.z.ai/*"
+      ],
+      "js": [
+        "core/config.js",
+        "core/tool-events.js",
+        "core/code-fields.js",
+        "core/parser.js",
+        "providers/glm.js",
+        "ui/build-panel.js",
+        "core/main.js"
+      ],
+      "css": [
+        "overlay.css"
+      ],
+      "run_at": "document_idle"
+    },
+    {
+      "matches": [
+        "https://arena.ai/*"
+      ],
+      "exclude_matches": [
+        "https://arena.ai/agent*",
+        "https://arena.ai/work*"
+      ],
+      "js": [
+        "core/config.js",
+        "core/tool-events.js",
+        "core/code-fields.js",
+        "core/parser.js",
+        "providers/arena.js",
+        "ui/build-panel.js",
+        "core/main.js"
+      ],
+      "css": [
+        "overlay.css"
+      ],
+      "run_at": "document_idle"
+    },
+    {
+      "matches": [
+        "https://arena.ai/agent*",
+        "https://arena.ai/work*"
+      ],
+      "js": [
+        "core/config.js",
+        "core/tool-events.js",
+        "core/code-fields.js",
+        "core/parser.js",
+        "providers/generic.js",
+        "providers/agent.js",
+        "ui/build-panel.js",
+        "core/main.js"
+      ],
+      "css": [
+        "overlay.css"
+      ],
+      "run_at": "document_idle"
+    },
+    {
+      "matches": [
+        "https://lmarena.ai/agent*"
+      ],
+      "js": [
+        "core/config.js",
+        "core/tool-events.js",
+        "core/code-fields.js",
+        "core/parser.js",
+        "providers/generic.js",
+        "providers/lmarena-agent.js",
+        "ui/build-panel.js",
+        "core/main.js"
+      ],
+      "css": [
+        "overlay.css"
+      ],
+      "run_at": "document_idle"
+    },
+    {
+      "matches": [
+        "https://www.meta.ai/*",
+        "https://meta.ai/*"
+      ],
+      "js": [
+        "core/config.js",
+        "core/tool-events.js",
+        "core/code-fields.js",
+        "core/parser.js",
+        "providers/meta.js",
+        "ui/build-panel.js",
+        "core/main.js"
+      ],
+      "css": [
+        "overlay.css"
+      ],
+      "run_at": "document_idle"
+    },
+    {
+      "matches": [
+        "https://claude.ai/*"
+      ],
+      "js": [
+        "core/config.js",
+        "core/tool-events.js",
+        "core/code-fields.js",
+        "core/parser.js",
+        "providers/generic.js",
+        "providers/claude.js",
+        "ui/build-panel.js",
+        "core/main.js"
+      ],
+      "css": [
+        "overlay.css"
+      ],
+      "run_at": "document_idle"
+    },
+    {
+      "matches": [
+        "https://chat.qwen.ai/*"
+      ],
+      "js": [
+        "providers/qwen-net.js"
+      ],
+      "world": "MAIN",
+      "run_at": "document_start"
+    },
+    {
+      "matches": [
+        "https://huggingface.co/chat*"
+      ],
+      "js": [
+        "core/config.js",
+        "core/tool-events.js",
+        "core/code-fields.js",
+        "core/parser.js",
+        "providers/generic.js",
+        "providers/hfchat.js",
+        "ui/build-panel.js",
+        "core/main.js"
+      ],
+      "css": [
+        "overlay.css"
+      ],
+      "run_at": "document_idle"
+    },
+    {
+      "matches": [
+        "https://dola.com/*",
+        "https://www.dola.com/*"
+      ],
+      "js": [
+        "core/config.js",
+        "core/tool-events.js",
+        "core/code-fields.js",
+        "core/parser.js",
+        "providers/generic.js",
+        "providers/dola.js",
+        "ui/build-panel.js",
+        "core/main.js"
+      ],
+      "css": [
+        "overlay.css"
+      ],
+      "run_at": "document_idle"
+    },
+    {
+      "matches": [
+        "https://chat.qwen.ai/*"
+      ],
+      "js": [
+        "core/config.js",
+        "core/tool-events.js",
+        "core/code-fields.js",
+        "core/parser.js",
+        "providers/qwen.js",
+        "ui/build-panel.js",
+        "core/main.js"
+      ],
+      "css": [
+        "overlay.css"
+      ],
+      "run_at": "document_idle"
+    }
+  ]
+}
