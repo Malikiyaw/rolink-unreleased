@@ -1,7 +1,7 @@
 // rolink-extension/core/tool-prompts.js — GENERATED. Do not edit by hand.
 // Re-emit with: npm run generate:prompts (from mcp-server/)
 //
-// Source of truth: mcp-server/src/tools/toolPrompts.ts (all 154 tools; lazy lookup, ~60KB one-time parse).
+// Source of truth: mcp-server/src/tools/toolPrompts.ts (all 159 tools; lazy lookup, ~60KB one-time parse).
 // Loaded by content scripts (see rolink-extension/manifest.json) AFTER
 // core/code-fields.js. main.js consults window.ROLINK_TOOL_PROMPTS on the
 // error-recovery path (failed tool -> usage + pitfalls fed back to model).
@@ -393,10 +393,10 @@ window.ROLINK_TOOL_PROMPTS = {
   "create_animation_track": {
     "persona": "You are an expert Roblox animator who rigs Humanoids, blocks key poses, eases with the right style and direction, and loops seamlessly at sixty frames per second. You ship real keyframes on Animator-owned rigs. You never deliver motionless tracks, popping loops, or unrigged characters.",
     "when_to_use": "Define a keyframed animation track (walk cycles, emotes, zombie shamble). Studio equivalent: Animation Editor keyframe track.",
-    "args_guide": "name*. keyframes* inline JSON array[1-200] of {time>=0 non-decreasing, easing? linear|quadIn|quadOut|quadInOut|cubicIn|cubicOut|cubicInOut|sineIn|sineOut|sineInOut|bezierOut|springOut (eased segments bake interpolated frames for realistic motion; long eased segments subdivide deeper with arc lift), poses[1-64] of {part*, position*{x,y,z}, rotation*{x,y,z} degrees, easing? per-pose override, scale?}}. loop? (default false). Pose part names must match rig part names (e.g. Head, Torso, Left Arm). Write keyframes INLINE as JSON (numbers need no escaping — do NOT use a RAW block, RAW delivers strings and fails validation). Realism recipe: block extreme poses first, ease slow-in/out around them (quadInOut/cubicInOut), add bezierOut overshoot on strikes and springOut settle on landings, keep contact feet planted across holds. Studio gotcha: the track registers a temporary Studio-only hash ID; play it with play_animation. For NPCs drive Motor6D from a server Script — never a LocalScript, never runtime registration live.",
+    "args_guide": "name*. keyframes* inline JSON array[1-200] of {time>=0 non-decreasing, easing? linear|quadIn|quadOut|quadInOut|cubicIn|cubicOut|cubicInOut|sineIn|sineOut|sineInOut|bezierOut|springOut (bare family names accepted: quad, cubic, sine, bezier, spring = *InOut; bezier means bezierOut, spring means springOut; eased segments bake interpolated frames for realistic motion; long eased segments subdivide deeper with arc lift), poses[1-64] of {part*, position*{x,y,z}, rotation*{x,y,z} degrees, easing? per-pose override, scale?}}. loop? (default false). Pose part names must match rig part names (e.g. Head, Torso, Left Arm). Write keyframes INLINE as JSON (numbers need no escaping — do NOT use a RAW block, RAW delivers strings and fails validation). Realism recipe: block extreme poses first, ease slow-in/out around them (quadInOut/cubicInOut), add bezierOut overshoot on strikes and springOut settle on landings, keep contact feet planted across holds. Studio gotcha: the track registers a temporary Studio-only hash ID; play it with play_animation. For NPCs drive Motor6D from a server Script — never a LocalScript, never runtime registration live.",
     "example_call": "###MCP_TOOL###\n{\"tool\":\"create_animation_track\",\"args\":{\"name\":\"Jump\",\"loop\":false,\"keyframes\":[{\"time\":0,\"poses\":[{\"part\":\"Torso\",\"position\":{\"x\":0,\"y\":3,\"z\":0},\"rotation\":{\"x\":0,\"y\":0,\"z\":0}}]},{\"time\":0.5,\"poses\":[{\"part\":\"Torso\",\"position\":{\"x\":0,\"y\":5,\"z\":0},\"rotation\":{\"x\":0,\"y\":0,\"z\":0}}]}]}}",
     "output": "{queued:true,id} → {animationId (temp hash), name}. Play with play_animation.",
-    "pitfalls": "1) Empty keyframes are rejected — supply real frames. 2) Target rig must have a Humanoid/Animator. 3) Hash IDs are Studio-only; they cannot ship in a published game. 4) Easing names need their suffix (quadIn, not bare quad — bare quad/cubic/sine are accepted as *InOut; bezier/spring mean bezierOut/springOut). 5) Budget: max 1024 total poses and 20s execution — split big combos across tracks. 6) Verify with get_animation_info{numeric:true} + preview/validate before calling motion done — robotic lerp means missing easing, not missing keyframes."
+    "pitfalls": "1) Empty keyframes are rejected — supply real frames. 2) Target rig must have a Humanoid/Animator. 3) Hash IDs are Studio-only; they cannot ship in a published game. 4) Easing names are canonical (quadIn, quadOut, bezierOut, springOut, linear); bare family names accepted (quad, cubic, sine, bezier, spring - mapped to *InOut) (quadIn, not bare quad — bare quad/cubic/sine are accepted as *InOut; ). 5) Budget: max 1024 total poses and 20s execution — split big combos across tracks. 6) Verify with get_animation_info{numeric:true} + preview/validate before calling motion done — robotic lerp means missing easing, not missing keyframes."
   },
   "play_animation": {
     "persona": "You are an animation director who previews tracks on properly rigged characters with Humanoid and Animator present. You verify in a real playtest since Edit mode can lie. You never judge motion from a broken rig or call it done from a still frame.",
@@ -1167,12 +1167,12 @@ window.ROLINK_TOOL_PROMPTS = {
     "pitfalls": "1) Long clips at high fps blow the key budget - shorten first. 2) Blend, then validate, then fix - in that order."
   },
   "fix_animation": {
-    "persona": "You are a meticulous repair tech who applies only the fixes that are provably safe: closing loops, clamping strays, dropping orphans, resetting bad easings. Everything else you report, never improvise.",
-    "when_to_use": "Right after validate_model_animation reports errors. Studio equivalent: accepting the auditor's safe fixes.",
-    "args_guide": "anim*. Applies: LOOP_MISMATCH (copy first pose to last), MARKER_OOB (clamp), ORPHAN_EVENT (drop), BAD_EASING (linear), empty tracks (drop). Spikes, jumps and unmatched joints are reported, not rewritten.",
-    "example_call": "###MCP_TOOL###\n{\"tool\":\"fix_animation\",\"args\":{\"anim\":\"Fire\"}}",
-    "output": "{animation, fixed[], remaining{errors,warnings}, passed}. Re-run preview after.",
-    "pitfalls": "1) passed:false means hand-fix the remainder - do not loop fix blindly. 2) Fixing never changes timing; retime separately if spikes persist."
+    "persona": "You are a prescriptive fix planner: you read the plan, present it, and only mutate when asked. You never claim success until the follow-up re-run of fix_animation/validate_model_animation passes.",
+    "when_to_use": "After validate_model_animation reports errors/warnings on a model animation (BAD_EASING, LOOP_MISMATCH, SPIKE, JUMP, TRACK_EMPTY, MARKER_OOB, ORPHAN_EVENT, FAST/LEAP warnings).",
+    "args_guide": "anim*. confirm? (default false). Plan entry codes: SEAM_BRIDGE (loop ends differ; apply = set_model_keyframe{anim, track, t:duration, pose:first.pose, ease:'linear'}); TRACK_EMPTY (apply = drop track); BAD_EASING (linearize bad keys); MARKER_OOB (clamp); ORPHAN_EVENT (drop). Manual entries (spikes/jumps) have no mutating path.",
+    "example_call": "###MCP_TOOL###\n{\"tool\":\"fix_animation\",\"args\":{\"anim\":\"Jump\"}}",
+    "output": "{animation, plan: {count, autoFixes, seams, entries: [{index, code, detail, fix, mutating}]}, applied, remaining: {errors, warnings}}",
+    "pitfalls": "1) Default call mutates NOTHING - read plan.entries + plan.autoFixes, explain the plan to the user. 2) Re-send with confirm:true to apply mutating entries. 3) Manual entries (SPIKE/JUMP/LEAP/FAST) need pose work: set_model_keyframe/set_model_easing, then re-run fix_animation{planOnly:true}. 4) Confirm with a follow-up re-run; the follow-up should show zero errors/warnings."
   },
   "create_attack_animation": {
     "persona": "You are a combat choreographer who scaffolds readable attacks: windup, strike, impact mark, recovery. You write the skeleton fast and leave the anatomy to the animator's next pass.",
@@ -1205,6 +1205,46 @@ window.ROLINK_TOOL_PROMPTS = {
     "example_call": "###MCP_TOOL###\n{\"tool\":\"set_track_lock\",\"args\":{\"anim\":\"Fire\",\"track\":\"Turret\",\"locked\":true}}",
     "output": "{animation, track, locked}.",
     "pitfalls": "1) A locked track fails loudly - unlock, don't work around it. 2) Locks live in the store, so chat and the timeline widget agree."
+  },
+  "preview_animation_contact_sheet": {
+    "persona": "You are an animation debugger who cannot see pixels (Studio plugins have no screenshot API), so your job is to read motion truth from verified pose data. You judge pop-through, limb overlap and snap quality from the schematic strip, and you say plainly when something needs the human's eye (Press Play).",
+    "when_to_use": "After authoring or fixing a model animation: the strip shows every tracked joint at sample times (default 6). Read the strip: overlapping limbs = bad, straight paths between holds = good.",
+    "args_guide": "anim*. frames? 2-12, default 6. Everything is schematic - bones + dots, never pixel art.",
+    "example_call": "###MCP_TOOL###\n{\"tool\":\"preview_animation_contact_sheet\",\"args\":{\"anim\":\"Jump\"}}",
+    "output": "{svg, samples, joints, duration, rendered:false, markers[]}. SVG strip with chain-linked bones; samples[frame][joint] = verified screen coordinates.",
+    "pitfalls": "1) There are no pixels - if it reads wrong, say so and press Play to verify. 2) R6/R15 rigs render the standard chains (Head, Torso, Left Arm, ...); unknown rigs render labeled dots. 3) Trust the math: poses are sampled with rlPoseAt, so the strip shows the actual pose per frame, eased."
+  },
+  "bind_animation_events": {
+    "persona": "You are a gameplay engineer wiring gameplay consequences (footstep sfx + dust, impact hitboxes, camera shakes) to animation markers so gameplay reads and feels right. You never invent marker times or paths - they come from add_animation_marker + get_animation_info, verified.",
+    "when_to_use": "After verify: markers now exist with times (and payloads); gameplay needs consequences tied to them.",
+    "args_guide": "anim*. bindings* [{marker*, action*, seconds? (default 0 = marker time), params?}]. action: play_sound (params.soundId required, rbxassetid://..., volume 0-10), create_vfx (params.name/size/lifetime/color/rate/path), shake_camera (params.amplitude 0.1-2, duration 0.5), enable_hitbox/disable_hitbox (params.hitbox = the BasePart name on the target model). Target paths are resolved at bind time; never invent them. scriptSource is for create_instance/set_script_content; install it, then verify with preview_animation_contact_sheet + Play-mode observation.",
+    "example_call": "###MCP_TOOL###\n{\"tool\":\"bind_animation_events\",\"args\":{\"anim\":\"Jump\",\"bindings\":[{\"marker\":\"FootStepL\",\"action\":\"play_sound\",\"params\":{\"soundId\":\"rbxassetid://12345\",\"volume\":0.8}},{\"marker\":\"Impact\",\"action\":\"shake_camera\",\"params\":{\"amplitude\":0.5,\"duration\":0.4}}]}}",
+    "output": "{animation, bindings, markerNames, script, scriptSource, warnings}",
+    "pitfalls": "1) play_sound rejects anything that is not an exact rbxassetid://<digits> or all-digit id (a bare '123abc' errors) - find audio via search_asset{category:'Audio'}, never invent an id. 2) enable_hitbox/disable_hitbox need params.hitbox. 3) Fire times are the marker times from animation start; the generated LocalScript fires them while it runs. 4) Keep bindings conservative - a handful of well-aimed sounds/shakes beats a flood of one-offs."
+  },
+  "list_animation_presets": {
+    "persona": "You are an animation catalog reader: you present the curated AI presets (greeting, jump, zombie shamble, dance, death collapse, celebration, victory, swimmer, sword swing...) so the AI picks one and writes it with create_animation_from_description. You never hand-write keyframe tables when a preset exists, and you don't guess poses without asking.",
+    "when_to_use": "User asks for an animation and a curated preset fits (\"wave at them\", \"a zombie walks\", \"spawn a celebration loop\").",
+    "args_guide": "rig? (any|R6|R15), tag? (greeting, horror, weapon, victory, swimming...). Returns presets[].name/tags/duration/summary/easings.",
+    "example_call": "###MCP_TOOL###\n{\"tool\":\"list_animation_presets\",\"args\":{}}",
+    "output": "{presets, total}",
+    "pitfalls": "1) Call create_animation_from_description{description, target} to instantiate, not a hand-written keyframe table. 2) Use the target from analyze_animatable_model (or the user's model path); joint names are shared between R6/R15. 3) Always validate after: preview_animation_contact_sheet + validate_model_animation (loops must close)."
+  },
+  "create_animation_from_description": {
+    "persona": "You are a text-to-animation writer: given a style description ('heavy sword swing', 'sad slow turn', 'celebration loop') you pick the best preset and emit its keyframes through the model-animation engine. You never write full keyframe tables by hand when a preset exists; you say so when no preset matches and suggest list_animation_presets.",
+    "when_to_use": "Someone wants an animation fast; you always pass target* (Model path from analyze_animatable_model) and a name* (or default to the preset name). Refine with set_model_keyframe{t, pose{rotation}} and set_model_easing{keyIndex, ease} after seeing the result.",
+    "args_guide": "description* (action words + style, e.g. 'heavy sword swing'), target* (Model path with the joints from analyze_animatable_model), name?, duration?, loop?; the result includes resolvedEasings so you see what actually ran; missingJoints tells you what the rig doesn't have.",
+    "example_call": "###MCP_TOOL###\n{\"tool\":\"create_animation_from_description\",\"args\":{\"description\":\"heavy sword swing\",\"target\":\"Workspace/Knight\",\"name\":\"SwordSwing\"}}",
+    "output": "{created, preset, duration, fps, loop, trackCount, names[], resolvedEasings, missingJoints?}",
+    "pitfalls": "1) NO_PRESET_MATCH: rephrase toward action/style words ('heavy', 'slow', 'celebration', 'zombie', 'jump') or write the animation with set_model_keyframe. 2) R6/R15: use shared joint names (Head, Torso, Left Arm, Right Arm, Left Leg, Right Leg) from analyze_animatable_model."
+  },
+  "preview_animation_ghost": {
+    "persona": "You are a motion-planning analyst who reads pose timelines. You present the ghost ledger (per-frame joint poses) as rows the user can eyeball, compare successive frames to find the bad window, and propose set_model_keyframe fixes before mutating anything.",
+    "when_to_use": "After creating/editing a model animation: see what it would do as a pose ledger before claiming it. Compare frames - a jump into a rest pose = read it, pace it with set_model_keyframe, re-preview.",
+    "args_guide": "anim*, frames? (default 6, 2-24).",
+    "example_call": "###MCP_TOOL###\n{\"tool\":\"preview_animation_ghost\",\"args\":{\"anim\":\"Jump\"}}",
+    "output": "{animation, frames, duration, joints, samples: {frame: {t, poses: {part: {pos, rot}}}}, velocityPeaks: {part: deg/s}, loopSeam, rendered: false, note}",
+    "pitfalls": "1) It is a schematic ledger, not pixels - read poses, it is the verified motion of the animation as authored. 2) Ghost overlay use: read frame N vs N+1, then set_model_keyframe to tune, then re-preview (ghosts are snapshots, not live models). 3) VelocityPeaks is worst-case across keyframe gaps; spikes[] in validate_model_animation covers the per-key detail."
   },
   "run_task": {
     "persona": "You are a task orchestrator who plans work as named steps with explicit dependencies and per-step verification. You declare the whole graph up front, read the evidence per step, and fix only the failed step. You never narrate a plan as prose instead of calling the tool, and you never nest orchestrators.",

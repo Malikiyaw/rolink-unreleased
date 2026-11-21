@@ -10,8 +10,8 @@
 window.ROLINK_CODE_FIELDS = {
   "version": 2,
   "source": "mcp-server/src/tools/registry.ts",
-  "generatedAt": "2026-09-25T18:34:12.905Z",
-  "toolCount": 154,
+  "generatedAt": "2026-11-21T12:43:59.725Z",
+  "toolCount": 159,
   "toolFields": {
     "get_instances": [
       "path",
@@ -210,6 +210,8 @@ window.ROLINK_CODE_FIELDS = {
       "projectId"
     ],
     "create_animation_track": [
+      "keyframes[].easing",
+      "keyframes[].poses[].easing",
       "keyframes[].poses[].part",
       "name",
       "projectId"
@@ -466,6 +468,7 @@ window.ROLINK_CODE_FIELDS = {
       "audio[].soundId",
       "name",
       "projectId",
+      "shots[].easing",
       "subtitles[].speaker",
       "subtitles[].text"
     ],
@@ -502,6 +505,18 @@ window.ROLINK_CODE_FIELDS = {
       "assetId",
       "projectId",
       "trackPath"
+    ],
+    "preview_cutscene": [
+      "name",
+      "projectId"
+    ],
+    "validate_cutscene": [
+      "name",
+      "projectId"
+    ],
+    "remove_cutscene": [
+      "name",
+      "projectId"
     ],
     "scan_errors": [
       "projectId"
@@ -616,22 +631,34 @@ window.ROLINK_CODE_FIELDS = {
       "projectId",
       "target"
     ],
+    "preview_animation_ghost": [
+      "anim",
+      "projectId"
+    ],
     "set_track_lock": [
       "anim",
       "projectId",
       "track"
     ],
-    "preview_cutscene": [
-      "name",
+    "preview_animation_contact_sheet": [
+      "anim",
       "projectId"
     ],
-    "validate_cutscene": [
-      "name",
+    "bind_animation_events": [
+      "anim",
+      "bindings[].marker",
       "projectId"
     ],
-    "remove_cutscene": [
+    "list_animation_presets": [
+      "projectId",
+      "rig",
+      "tag"
+    ],
+    "create_animation_from_description": [
+      "description",
       "name",
-      "projectId"
+      "projectId",
+      "target"
     ],
     "run_task": [
       "goal",
@@ -645,20 +672,17 @@ window.ROLINK_CODE_FIELDS = {
       "at",
       "name",
       "parent",
-      "projectId",
-      "source"
+      "projectId"
     ],
     "revise_import": [
       "importId",
-      "move",
       "move.at",
       "move.parent",
       "projectId",
       "rename"
     ],
     "get_model_graph": [
-      "importId",
-      "projectId"
+      "importId"
     ]
   },
   "stringFields": [
@@ -698,11 +722,9 @@ window.ROLINK_CODE_FIELDS = {
     "key",
     "keyword",
     "label",
+    "marker",
     "material",
     "message",
-    "move",
-    "move.at",
-    "move.parent",
     "name",
     "newName",
     "newParent",
@@ -719,6 +741,7 @@ window.ROLINK_CODE_FIELDS = {
     "query",
     "region",
     "rename",
+    "rig",
     "root",
     "sandboxId",
     "scenario",
@@ -726,11 +749,11 @@ window.ROLINK_CODE_FIELDS = {
     "snapshot",
     "snapshotId",
     "soundId",
-    "source",
     "speaker",
     "store",
     "studio_id",
     "system",
+    "tag",
     "target",
     "template",
     "text",

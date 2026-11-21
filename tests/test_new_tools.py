@@ -23,7 +23,10 @@ NEW_TOOLS = ["scan_errors", "inspect_ui", "screenshot_studio",
              "inspect_motion_effect", "remove_motion_effect",
              "preview_cutscene", "validate_cutscene", "remove_cutscene",
              "run_task", "import_distinctus_build",
-             "revise_import", "get_model_graph"]
+             "revise_import", "get_model_graph",
+             "preview_animation_contact_sheet", "bind_animation_events",
+             "list_animation_presets", "create_animation_from_description",
+             "preview_animation_ghost"]
 
 
 def read(*parts):
@@ -47,7 +50,7 @@ class NewToolChainTest(unittest.TestCase):
         bridge.mgr = mgr  # no servers started: queue/Studio paths stay offline
 
     def test_registry_has_147_with_new_tools(self):
-        self.assertEqual(len(self.registry), 154)
+        self.assertEqual(len(self.registry), 159)
         for n in NEW_TOOLS:
             self.assertIn(n, self.registry)
 
@@ -182,7 +185,7 @@ class AuditScriptTest(unittest.TestCase):
         r = subprocess.run([sys.executable, os.path.join(ROOT, "scripts", "audit_tools.py")],
                            capture_output=True, text=True, timeout=60)
         self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
-        self.assertIn("154 registered", r.stdout)
+        self.assertIn("159 registered", r.stdout)
         qpath = os.path.join(ROOT, "generated", "tool-quarantine.json")
         self.assertTrue(os.path.exists(qpath))
         q = json.load(io.open(qpath, encoding="utf-8"))

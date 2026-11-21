@@ -478,6 +478,94 @@ end
 -- delete_animation destroys our cached sequence. Service is deprecated in
 -- favor of AnimationClipProvider but still functional in Studio.
 local animCache: { [string]: KeyframeSequence } = {}
+-- ── Animation manifests: the durable identity of every animation ────────────
+-- KeyframeSequenceProvider issues only session-local hash IDs, so a hash
+-- cannot survive a Studio restart. The KeyframeSequence instance inside
+-- Workspace/RoLinkAnimations does (the Place persists). The manifest folder
+-- ReplicatedStorage/RoLinkAnimations/<Name> is the bridge between the two:
+-- path/name is the canonical ID; the hash stays a session-only convenience
+-- for playAnimation wiring. See resolveAnimationId + getAnimationInfo.
+local RL_MANIFEST_SCHEMA = 1
+local function rlManifestRoot(): Instance
+  local rs = game:GetService("ReplicatedStorage")
+  local f = rs:FindFirstChild("RoLinkAnimations")
+  if not f then
+    f = Instance.new("Folder")
+    f.Name = "RoLinkAnimations"
+    f.Parent = rs
+  end
+  return f
+end
+local function rlManifestClean(name: string): string
+  return tostring(name or ""):gsub("^%s+", ""):gsub("%s+$", ""):sub(1, 64)
+end
+local function rlManifestPathFor(name: string): string
+  return rlManifestRoot():GetFullName() .. "/" .. rlManifestClean(name)
+end
+local function rlManifestFind(name: string): Instance?
+  return rlManifestRoot():FindFirstChild(rlManifestClean(name))
+end
+local function rlManifestWrite(name: string, data: { [string]: any })
+  local f = rlManifestFind(name)
+  if not f then
+    f = Instance.new("Folder")
+    f.Name = rlManifestClean(name)
+    f.Parent = rlManifestRoot()
+  end
+  local sv = f:FindFirstChild("Info")
+  if not sv then
+    sv = Instance.new("StringValue")
+    sv.Name = "Info"
+    sv.Parent = f
+  end
+  local ok, enc = pcall(function() return HttpService:JSONEncode(data) end)
+  if not ok then return nil, tostring(enc):sub(1, 120) end
+  (sv :: StringValue).Value = enc
+  return sv
+end
+local function rlManifestRead(name: string): ({ [string]: any }?, string?)
+  local f = rlManifestFind(name)
+  if not f then return nil, "MODEL_ANIM_NOT_FOUND: no manifest for '" .. name:sub(1, 48) .. "' under ReplicatedStorage/RoLinkAnimations" end
+  local sv = f:FindFirstChild("Info")
+  if not sv or not sv:IsA("StringValue") then
+    return nil, "MODEL_ANIM_MANIFEST_INVALID: '" .. f:GetFullName() .. "' has no Info string"
+  end
+  local ok, v = pcall(function() return HttpService:JSONDecode((sv :: StringValue).Value) end)
+  if not ok or type(v) ~= "table" then return nil, "MODEL_ANIM_MANIFEST_CORRUPT" end
+  return v, nil
+end
+-- The manifest folder IS the durable record: extract the KeyframeSequence at
+-- sequencePath when the caller passes the manifest path directly.
+local function rlManifestSeqOf(folder: Instance): KeyframeSequence?
+  local sv = folder:FindFirstChild("Info")
+  if sv and sv:IsA("StringValue") then
+    local ok, v = pcall(function() return HttpService:JSONDecode((sv :: StringValue).Value) end)
+    if ok and type(v) == "table" and type(v.sequencePath) == "string" then
+      return findByPath(v.sequencePath)
+    end
+  end
+  return nil
+end
+-- One-time migration: every persisted KeyframeSequence gets a manifest so
+-- path/name resolves across restarts.
+local function rlManifestMigrate()
+  pcall(function()
+    local folder = game.Workspace:FindFirstChild("RoLinkAnimations")
+    if not folder then return end
+    for _, inst in ipairs(folder:GetChildren()) do
+      if inst:IsA("KeyframeSequence") and not rlManifestFind(inst.Name) then
+        rlManifestWrite(inst.Name, {
+          schema = RL_MANIFEST_SCHEMA,
+          name = inst.Name,
+          sequencePath = inst:GetFullName(),
+          createdAt = tostring(os.date("!%Y-%m-%dT%H:%M:%SZ")),
+          source = "migration:create_animation_track",
+        })
+      end
+    end
+  end)
+end
+rlManifestMigrate()
 local function num(v:any, d:number): number
   local n = tonumber(v); if n == nil then return d end; return n
 end
@@ -505,6 +593,30 @@ local EASE_FNS: { [string]: (number) -> number } = {
   -- [-0.15,1.15] at bake time so one energetic segment cannot fling a limb.
   bezierOut = function(t) local c1 = 1.2 local u = t - 1 return 1 + (c1 + 1) * u * u * u + c1 * u * u end,
   springOut = function(t) return 1 - math.exp(-5 * t) * math.cos(9 * t) end,
+  -- Task 4.1 custom curves. springOut is a stiff settle; bounce has multiple
+  -- lobes; elastic dings with less rigidity; steps quantizes (useful for
+  -- twitchy/groovy entries); bezier with parameters via EASE_FNS (see
+  -- makeBezier + resolveEasing parsing below).
+  bounce = function(t)
+    if t < 1 / 2.75 then return 7.5625 * t * t end
+    if t < 2 / 2.75 then
+      local a = t - 1.5 / 2.75
+      return 7.5625 * a * a + 0.75
+    end
+    if t < 2.5 / 2.75 then
+      local a = t - 2.25 / 2.75
+      return 7.5625 * a * a + 0.9375
+    end
+    local a = t - 2.625 / 2.75
+    return 7.5625 * a * a + 0.984375
+  end,
+  elastic = function(t)
+    if t <= 0 then return 0 end
+    if t >= 1 then return 1 end
+    local o = 1.70158
+    return math.pow(2, -10 * t) * math.sin((t * 10 - o) * (2 * math.pi) / 3)
+  end,
+  steps = function(t) return math.floor(t * 12) / 12 end,
 }
 -- Subdivision counts live at the use site (chunk locals are capped, so no
 -- one-per-constant registers here): 3 baked frames per segment, 5 on moves
@@ -519,9 +631,46 @@ local EASE_ALIASES: { [string]: string } = {
   easein = "quadIn", easeout = "quadOut", easeinout = "quadInOut",
   ease_in = "quadIn", ease_out = "quadOut", ease_in_out = "quadInOut",
 }
-local EASE_LIST = "linear|quadIn|quadOut|quadInOut|cubicIn|cubicOut|cubicInOut|sineIn|sineOut|sineInOut|bezierOut|springOut"
+local EASE_LIST = "linear|quadIn|quadOut|quadInOut|cubicIn|cubicOut|cubicInOut|sineIn|sineOut|sineInOut|bezierOut|springOut|bounce|elastic|steps|steps2|steps4|steps8|steps12|bezier(x1,y1,x2,y2)"
 local function resolveEasing(name:string): (string?)
   if EASE_FNS[name] then return name end
+  -- Task 4.1 dynamic easings:
+  --  * bezier(x1,y1,x2,y2): cubic Bernstein curve registered under its literal name.
+  --  * stepsN: piecewise-constant quantization (2/4/8/12 are named shorthands).
+  local function makeBezier(x1: number, y1: number, x2: number, y2: number): (number -> number)
+    -- Solve t for x(t)=u by bisection on the degree-3 Bernstein curve, then
+    -- evaluate y(t). Standard P0=(0,0), P3=(1,1), P1=(x1,y1), P2=(x2,y2).
+    local function x(t: number): number
+      local mt = 1 - t
+      return 3 * mt * mt * t * x1 + 3 * mt * t * t * x2 + t * t * t * 1
+    end
+    local function y(t: number): number
+      local mt = 1 - t
+      return 3 * mt * mt * t * y1 + 3 * mt * t * t * y2 + t * t * t * 1
+    end
+    return function(u: number): number
+      if u <= 0 then return 0 end
+      if u >= 1 then return 1 end
+      local lo, hi = 0, 1
+      for _ = 1, 22 do
+        local mid = (lo + hi) / 2
+        if x(mid) < u then lo = mid else hi = mid end
+      end
+      return math.clamp(y((lo + hi) / 2), 0, 1)
+    end
+  end
+  local bx1, by1, bx2, by2 = name:match("^bezier%(([%d%.%-]+),([%d%.%-]+),([%d%.%-]+),([%d%.%-]+)%)$")
+  if bx1 then
+    local fn = makeBezier(tonumber(bx1), tonumber(by1), tonumber(bx2), tonumber(by2))
+    EASE_FNS[name] = fn
+    return name
+  end
+  local sN = name:match("^steps(%d+)$")
+  if sN then
+    local levels = tonumber(sN)
+    EASE_FNS[name] = function(t: number) return math.floor(t * levels) / levels end
+    return name
+  end
   local norm = name:lower():gsub("[%s%-%_]", "")
   for k in pairs(EASE_FNS) do
     if k:lower() == norm then return k end
@@ -643,6 +792,18 @@ local function createAnimationTrack(args:{ [string]: any }): { [string]: any }
     end
   end
   if totalPoses > 1024 then error("too many animated parts (" .. totalPoses .. " total poses, max 1024) - split across tracks or use fewer keyframes") end
+  -- Report what easings actually ran (the model sees what it sent, canonicalized).
+  local resolvedEasings: { [string]: boolean } = {}
+  for _, kfD in ipairs(kfData) do
+    if type(kfD) == "table" then
+      resolvedEasings[resolveEasing(tostring((kfD::any).easing or "linear")) or "linear"] = true
+      for _, pD in ipairs((kfD::any).poses or {}) do
+        if type(pD) == "table" and (pD::any).easing then
+          resolvedEasings[resolveEasing(tostring((pD::any).easing)) or "linear"] = true
+        end
+      end
+    end
+  end
   kfData = bakeEased(kfData)
   local folder = game.Workspace:FindFirstChild("RoLinkAnimations")
   if not folder then folder = Instance.new("Folder"); folder.Name = "RoLinkAnimations"; folder.Parent = game.Workspace end
@@ -678,14 +839,22 @@ local function createAnimationTrack(args:{ [string]: any }): { [string]: any }
   pcall(function() ChangeHistoryService:SetWaypoint("RoLink create " .. name) end)
   local hashId = game:GetService("KeyframeSequenceProvider"):RegisterKeyframeSequence(seq)
   animCache[tostring(hashId)] = seq
+  rlManifestWrite(name, {
+    schema = RL_MANIFEST_SCHEMA,
+    name = name,
+    sequencePath = seq:GetFullName(),
+    createdAt = tostring(os.date("!%Y-%m-%dT%H:%M:%SZ")),
+    source = "create_animation_track",
+  })
   local snippet = "local seq = game.Workspace.RoLinkAnimations:FindFirstChild(\""
     .. name:gsub('"', "'")
     .. "\") assert(seq, \"missing track " .. name:gsub('"', "'")
     .. "\") local id = game:GetService(\"KeyframeSequenceProvider\"):RegisterKeyframeSequence(seq)"
     .. " local anim = Instance.new(\"Animation\") anim.AnimationId = id"
     .. " local track = animator:LoadAnimation(anim) track:Play() -- Animation object chain, never pass KeyframeSequence to LoadAnimation"
-  return { animationId = tostring(hashId), name = name, keyframes = #kfData,
-    path = seq:GetFullName(), runtimeSnippet = snippet }
+  return { animationId = tostring(hashId), sessionAnimationId = tostring(hashId), name = name, keyframes = #kfData,
+    path = seq:GetFullName(), animationPath = seq:GetFullName(), manifestPath = rlManifestPathFor(name), runtimeSnippet = snippet,
+    resolvedEasings = rlEasingList(resolvedEasings) }
 end
 -- Rigs the model can actually address: Models with a Humanoid, by full path.
 local function rigCandidates(): {string}
@@ -721,16 +890,28 @@ local function resolveAnimationId(args:{ [string]: any }): string
   end
   if pathArg ~= "" then
     local inst = findByPath(pathArg)
+    if not inst then
+      -- Durable names resolve through the manifest store: the full path or
+      -- the bare name; its Info JSON carries sequencePath.
+      local name = pathArg:match("RoLinkAnimations/([^/]+)$") or pathArg
+      local man = rlManifestRead(name)
+      if man and man.sequencePath then inst = findByPath(tostring(man.sequencePath)) end
+    end
     if not inst then error("not found " .. pathArg .. siblingHint(pathArg)) end
-    if not inst:IsA("KeyframeSequence") then error("not a KeyframeSequence: " .. inst:GetFullName()) end
+    -- The manifest path form is the Folder (ReplicatedStorage/RoLinkAnimations/Name);
+    -- pull its sequencePath out of the Info JSON.
+    local seq = nil
+    if inst:IsA("KeyframeSequence") then seq = inst
+    elseif inst:IsA("Folder") then seq = rlManifestSeqOf(inst) end
+    if not seq then error("not a KeyframeSequence: " .. inst:GetFullName()) end
     local okR, rId = pcall(function()
-      return game:GetService("KeyframeSequenceProvider"):RegisterKeyframeSequence(inst :: any)
+      return game:GetService("KeyframeSequenceProvider"):RegisterKeyframeSequence(seq :: any)
     end)
     if not okR or not rId then error("could not register KeyframeSequence at " .. inst:GetFullName()) end
-    animCache[tostring(rId)] = inst
+    animCache[tostring(rId)] = seq
     return tostring(rId)
   end
-  error("animationId or path required (hash, rbxassetid://, or Workspace/RoLinkAnimations/<Name>)")
+  error("animationId or path required (hash, rbxassetid://, or a path/name)")
   return ""
 end
 local function playAnimation(args:{ [string]: any }): { [string]: any }
@@ -851,6 +1032,18 @@ local function summarizeSequence(seq: Instance, animId: string, numeric:boolean?
     end)
     if okC then ret.clipCurves = curves end
   end
+  -- Animation-truth: model-anim markers (with payloads) so gameplay logic can
+  -- be generated from read-back alone. Missing markers = empty table.
+  local markers: { [string]: any } = {}
+  local mOK, mV = pcall(function()
+    local sv = game:GetService("ReplicatedStorage"):FindFirstChild("RoLinkModelAnims")
+      :FindFirstChild(tostring(seq::any).Name):FindFirstChild("markers")
+    if not sv or not sv:IsA("StringValue") then return nil end
+    local v = HttpService:JSONDecode((sv::StringValue).Value)
+    return type(v) == "table" and v or {}
+  end)
+  if mOK and type(mV) == "table" then markers = mV end
+  ret.markers = markers
   return ret
 end
 local function getAnimationInfo(args:{ [string]: any }): { [string]: any }
@@ -859,11 +1052,20 @@ local function getAnimationInfo(args:{ [string]: any }): { [string]: any }
   local numeric = args.numeric == true or tostring(args.mode or ""):lower() == "numeric"
   if pathArg ~= "" then
     local inst = findByPath(pathArg)
-    if not inst then error("not found " .. pathArg .. siblingHint(pathArg)) end
-    if not (inst:IsA("KeyframeSequence")) then
-      error("not a KeyframeSequence: " .. inst:GetFullName() .. " (" .. inst.ClassName .. ")")
+    if inst and inst:IsA("KeyframeSequence") then
+      return summarizeSequence(inst, animId ~= "" and animId or inst:GetFullName(), numeric or nil)
     end
-    return summarizeSequence(inst, animId ~= "" and animId or inst:GetFullName(), numeric or nil)
+    -- Durable manifest path or bare name (see rlManifestRoot): resolve
+    -- through the manifest store + provider, same as playAnimation.
+    local okSeq, animId2 = pcall(function() return resolveAnimationId({ path = pathArg }) end)
+    if okSeq and animId2 then
+      local seq2 = animCache[tostring(animId2)]
+      if seq2 then
+        return summarizeSequence(seq2, pathArg, numeric or nil)
+      end
+    end
+    if inst then error("not a KeyframeSequence: " .. inst:GetFullName() .. " (" .. inst.ClassName .. ")") end
+    error("not found " .. pathArg .. siblingHint(pathArg))
   end
   if animId == "" then error("animationId or path required (e.g. path=Workspace/RoLinkAnimations/HelloWave)") end
   local seq = animCache[animId]
@@ -881,6 +1083,11 @@ local function inspectKeyframeTrack(args:{ [string]: any }): { [string]: any }
   local pathArg = tostring(args.path or args.trackPath or args.animationId or "")
   if pathArg == "" then error("path required (e.g. path=Workspace/RoLinkAnimations/M1)") end
   local inst = findByPath(pathArg)
+  if not (inst and inst:IsA("KeyframeSequence")) then
+    -- Durable manifest path or bare name: resolve through the manifest store.
+    local okS, animId2 = pcall(function() return resolveAnimationId({ path = pathArg }) end)
+    if okS and animId2 then inst = animCache[tostring(animId2)] end
+  end
   if not inst then error("not found " .. pathArg .. siblingHint(pathArg)) end
   if not inst:IsA("KeyframeSequence") then error("not a KeyframeSequence: " .. inst:GetFullName() .. " (" .. inst.ClassName .. ") - for model animations use validate_model_animation with a ReplicatedStorage/RoLinkModelAnims/<Name>") end
   return summarizeSequence(inst, inst:GetFullName(), true)
@@ -889,9 +1096,19 @@ local function deleteAnimation(args:{ [string]: any }): { [string]: any }
   local animId = tostring(args.animationId or "")
   if animId == "" then error("animationId required") end
   local seq = animCache[animId]
-  if seq then pcall(function() seq:Destroy() end); animCache[animId] = nil
+  if not seq then
+    -- Durable manifest path or bare name: resolve through the manifest store,
+    -- then delete the underlying sequence (deletion destroys the in-Place
+    -- sequence - there is no provider remove API).
+    local okD, resolved = pcall(function() return resolveAnimationId(args) end)
+    if okD and resolved then seq = animCache[tostring(resolved)] end
+  end
+  if seq then
+    local deletedPath = seq:GetFullName()
+    pcall(function() seq:Destroy() end)
+    animCache[animId] = nil
     pcall(function() ChangeHistoryService:SetWaypoint("RoLink delete " .. animId) end)
-    return { deleted = true, animationId = animId }
+    return { deleted = true, animationId = animId, path = deletedPath }
   end
   return { deleted = false, animationId = animId, error = "not cached (only temp tracks can be deleted)" }
 end
@@ -1042,6 +1259,11 @@ local track = animator:LoadAnimation(animation)
 track.Looped = config.loop == true
 local speed = tonumber(config.speed or 1) or 1
 if speed ~= 1 then track:AdjustSpeed(math.clamp(speed, 0.1, 8)) end
+-- Task 4.3: surface state machine knobs on the controller itself.
+if type(config.priority) == "number" then track.Priority = config.priority end
+if type(config.fadeIn) == "number" then track.FadeIn = config.fadeIn end
+if type(config.fadeOut) == "number" then track.FadeOut = config.fadeOut end
+if type(config.state) == "string" and config.state ~= "" then folder:SetAttribute("RoLinkControllerState", config.state) end
 folder:SetAttribute("RoLinkRuntimeState", "playing")
 folder:SetAttribute("RoLinkAnimationId", tostring(animationId))
 track:Play()
@@ -1128,6 +1350,10 @@ function Motion.motionControllerSummary(name:string): { [string]: any }
     speed = tonumber(config.speed or 1) or 1,
     startDelay = tonumber(config.startDelay or 0) or 0,
     runtimeState = folder:GetAttribute("RoLinkRuntimeState"),
+    state = config.state or nil,
+    priority = tonumber(config.priority),
+    fadeIn = tonumber(config.fadeIn),
+    fadeOut = tonumber(config.fadeOut),
   }
   if sequence then
     out.sequence = summarizeSequence(sequence, tostring(config.animationId or sequence:GetFullName()), true)
@@ -1137,6 +1363,31 @@ function Motion.motionControllerSummary(name:string): { [string]: any }
   if not sequence then table.insert(warnings, "KeyframeSequence does not resolve") end
   out.warnings = warnings
   return out
+end
+-- Task 4.4: root-motion audit. Compare the HumanoidRootPart pose at t=0 vs
+-- the end (via the continuous sampler). `moves=true` means the controller
+-- travels through space (walk/run); false means turn-in-place/static.
+Motion.motionRootMotion = function(seq: Instance, target: Instance?): ({ [string]: any }?)
+  local kfs = (seq :: any):GetKeyframes()
+  if #kfs == 0 then return nil end
+  local rootName = "HumanoidRootPart"
+  local okR, rInst = pcall(function()
+    if target then return target:FindFirstChild("HumanoidRootPart") end
+  end)
+  if okR and rInst then rootName = rInst.Name or rootName end
+  local ok1, p1 = pcall(function() return Motion.motionSampleSequence(seq, 0)[rootName] end)
+  local ok2, p2 = pcall(function() return Motion.motionSampleSequence(seq, (kfs[#kfs] :: any).Time)[rootName] end)
+  if not ok1 or not ok2 or type(p1) ~= "table" or type(p2) ~= "table" then return nil end
+  local fP, lP = p1.position or { x = 0, y = 0, z = 0 }, p2.position or { x = 0, y = 0, z = 0 }
+  local dx, dy, dz = lP.x - fP.x, lP.y - fP.y, lP.z - fP.z
+  local dist = math.sqrt(dx * dx + dy * dy + dz * dz)
+  return {
+    rootName = rootName, start = fP, endPt = lP,
+    netDistance = rlRound2(dist),
+    moves = dist > 0.5,
+    duration = tonumber((kfs[#kfs] :: any).Time) or 0,
+    note = "Root displacement: 0 = turn-in-place/static; >0.5 studs = moves through space (walk/run). For moves use create_motion_effect/root motion; static states (idle, turn-in-place) should be root-static.",
+  }
 end
 function Motion.motionSampleSequence(seq: Instance, t:number): { [string]: any }
   local kfs = (seq :: any):GetKeyframes()
@@ -1266,8 +1517,40 @@ function Motion.motionPoseCFrame(data:any): CFrame
     math.rad(num(r and (r :: any).y, 0)),
     math.rad(num(r and (r :: any).z, 0)))
 end
+-- Easing names motionEasingParts can express on Roblox tracks.
+Motion.MOTION_EASING_ENUMS: { [string]: boolean } = {
+  linear = true, quadIn = true, quadOut = true, quadInOut = true,
+  cubicIn = true, cubicOut = true, cubicInOut = true,
+  sineIn = true, sineOut = true, sineInOut = true,
+  bezierOut = true, springOut = true,
+}
+-- Task 4.1: names with no Roblox Enum mapping (bounce, elastic, steps, bezier).
+Motion.motionIsCustomCurve = function(name: string): boolean
+  local resolved = resolveEasing(name) or "linear"
+  return not Motion.MOTION_EASING_ENUMS[resolved]
+end
+Motion.motionCustomCurves = function(kfData: any): { string }
+  local out: { string } = {}
+  for _, kfD in ipairs(kfData or {}) do
+    if type(kfD) == "table" and (kfD :: any).easing ~= nil then
+      local n = tostring((kfD :: any).easing)
+      if Motion.motionIsCustomCurve(n) then
+        local dup = false
+        for _, x in ipairs(out) do if x == n then dup = true break end end
+        if not dup then table.insert(out, n) end
+      end
+    end
+  end
+  table.sort(out)
+  return out
+end
 function Motion.motionEasingParts(name:string): (string, string)
   local resolved = resolveEasing(name) or "linear"
+  if not Motion.MOTION_EASING_ENUMS[resolved] then
+    -- Custom curve: no Enum exists - motion controllers play it as Linear.
+    -- The authoritative surface is validate_motion_animation.motion_truth.customCurves.
+    return "Custom", "InOut"
+  end
   if resolved == "linear" then return "Linear", "InOut" end
   if resolved:find("InOut", 1, true) then
     local family = resolved:match("^(quad|cubic|sine)") or "quad"
@@ -1397,6 +1680,23 @@ local function createMotionAnimation(args:{ [string]: any }): { [string]: any }
   if not target:FindFirstChildOfClass("Humanoid") then
     error("MOTION_TARGET_INVALID: model '" .. target:GetFullName() .. "' has no Humanoid")
   end
+  -- Task 4.3: humanoid state machine surface.
+  local state = tostring(args.state or ""):sub(1, 16)
+  if state ~= "" and not state:match("^[%w%-_]+$") then
+    error("MOTION_STATE_INVALID: state must be 1-16 alphanumeric/underscore characters (got '" .. state:sub(1, 16) .. "')")
+  end
+  local priority = tonumber(args.priority)
+  if priority ~= nil and (priority < 0 or priority > 10 or math.floor(priority) ~= priority) then
+    error("MOTION_PRIORITY_INVALID: priority must be 0-10 integer (got " .. tostring(args.priority) .. ")")
+  end
+  local fadeIn = tonumber(args.fadeIn)
+  if fadeIn ~= nil and (fadeIn < 0 or fadeIn > 2.5) then
+    error("MOTION_FADE_INVALID: fadeIn must be 0-2.5s (got " .. tostring(args.fadeIn) .. ")")
+  end
+  local fadeOut = tonumber(args.fadeOut)
+  if fadeOut ~= nil and (fadeOut < 0 or fadeOut > 2.5) then
+    error("MOTION_FADE_INVALID: fadeOut must be 0-2.5s (got " .. tostring(args.fadeOut) .. ")")
+  end
   local name = Motion.motionCleanName(args.name, "RoLinkMotion")
   local root = Motion.motionRoot()
   local oldFolder = root:FindFirstChild(name)
@@ -1430,6 +1730,14 @@ local function createMotionAnimation(args:{ [string]: any }): { [string]: any }
   made.animationId = tostring(animationId)
   made.path = sequence:GetFullName()
   sequence:SetAttribute("RoLinkMotionAnimation", name)
+  rlManifestWrite(name, {
+    schema = RL_MANIFEST_SCHEMA,
+    name = name,
+    sequencePath = sequence:GetFullName(),
+    targetPath = config.targetPath,
+    createdAt = tostring(os.date("!%Y-%m-%dT%H:%M:%SZ")),
+    source = "create_motion_animation",
+  })
   local playback = tostring(args.playback or "server")
   if playback ~= "server" and playback ~= "client" then
     error("playback must be server or client")
@@ -1440,9 +1748,12 @@ local function createMotionAnimation(args:{ [string]: any }): { [string]: any }
     loop = args.loop == true, playback = playback,
     autoPlay = args.autoPlay ~= false, speed = num(args.speed, 1),
     startDelay = num(args.startDelay, 0),
+    state = (state ~= "") and state or nil, priority = priority, fadeIn = fadeIn, fadeOut = fadeOut,
+    customCurves = Motion.motionCustomCurves(args.keyframes or {}),
   }
   local folder = Instance.new("Folder")
   folder.Name = name
+  if config.state ~= nil then folder:SetAttribute("RoLinkControllerState", config.state) end
   folder:SetAttribute("RoLinkMotionAnimation", true)
   folder:SetAttribute("targetPath", config.targetPath)
   folder:SetAttribute("sequencePath", config.sequencePath)
@@ -1468,11 +1779,17 @@ local function createMotionAnimation(args:{ [string]: any }): { [string]: any }
   script.Parent = scripts
   folder:SetAttribute("scriptPath", script:GetFullName())
   pcall(function() ChangeHistoryService:SetWaypoint("RoLink motion animation " .. name) end)
-  return { animation = name, controller = folder:GetFullName(), script = script:GetFullName(),
+  local easings: { [string]: boolean } = {}
+  for _, kfD in ipairs(args.keyframes or {}) do
+    if type(kfD) == "table" then
+      easings[resolveEasing(tostring((kfD::any).easing or "linear")) or "linear"] = true
+    end
+  end
+  return { animation = name, path = made.path, controller = folder:GetFullName(), script = script:GetFullName(),
     target = target:GetFullName(), sequence = sequence:GetFullName(),
     animationId = made.animationId, keyframes = made.keyframes, duration = made.duration,
     playback = playback, autoPlay = config.autoPlay, loop = config.loop,
-    rendered = false, playable = true,
+    rendered = false, playable = true, resolvedEasings = rlEasingList(easings),
     note = "Edit-time controller created. The Script registers this KeyframeSequence and plays it in Play mode." }
 end
 local function inspectMotionAnimation(args:{ [string]: any }): { [string]: any }
@@ -1541,12 +1858,69 @@ local function validateMotionAnimation(args:{ [string]: any }): { [string]: any 
       end
     end
   end
+  -- Motion spikes: per-key gap rates (deg/s and studs/s) from the continuous
+  -- sampler; flags uneven transitions the same way model anims do.
+  local spikes: { [string]: any } = {}
+  if sequence then
+    local kfsSeq = (sequence :: any):GetKeyframes()
+    for i = 2, #kfsSeq do
+      local t0 = num((kfsSeq[i - 1] :: any).Time, 0)
+      local t1 = num((kfsSeq[i] :: any).Time, 0)
+      local dt = t1 - t0
+      if dt > 1e-9 then
+        local okA, posesA = pcall(function() return Motion.motionSampleSequence(sequence, t0) end)
+        local okB, posesB = pcall(function() return Motion.motionSampleSequence(sequence, t1) end)
+        if okA and okB and type(posesA) == "table" and type(posesB) == "table" then
+          for pname, a in pairs(posesA) do
+            local c = posesB[pname]
+            if type(a) == "table" and type(c) == "table" then
+              local ap, cp = a.position or {}, c.position or {}
+              local ar, cr = a.rotation or {}, c.rotation or {}
+              local dp = math.sqrt((num((cp::any).x, 0) - num((ap::any).x, 0)) ^ 2
+                + (num((cp::any).y, 0) - num((ap::any).y, 0)) ^ 2
+                + (num((cp::any).z, 0) - num((ap::any).z, 0)) ^ 2) / dt
+              local dr = ((math.abs(num((cr::any).x, 0) - num((ar::any).x, 0))
+                + math.abs(num((cr::any).y, 0) - num((ar::any).y, 0))
+                + math.abs(num((cr::any).z, 0) - num((ar::any).z, 0))) / dt)
+              local entry = { part = pname, key = i,
+                posPerSec = rlRound2(dp), rotPerSec = rlRound2(dr) }
+              if dr > RL_ROT_WARN or dp > RL_POS_WARN then
+                entry.severity = (dr > RL_ROT_ERR or dp > RL_POS_ERR) and "error" or "warning"
+                table.insert(spikes, entry)
+              end
+            end
+          end
+        end
+      end
+    end
+  end
   local out = Motion.motionControllerSummary(name)
   out.valid = #errors == 0
   out.errors = errors
   out.warnings = warnings
   out.duration = duration
   out.controllerExists = folder ~= nil
+  out.spikes = spikes
+  -- Task 4.3: humanoid state machine audit (state/priority/fade ranges).
+  local stateProblems: { [string]: any } = {}
+  local stt = tostring(config.state or "")
+  if stt ~= "" and (string.len(stt) > 16 or not stt:match("^[%w%-_]+$")) then
+    stateProblems.STATE_INVALID = stt:sub(1, 24)
+  end
+  local prt = tonumber(config.priority)
+  if prt ~= nil and (prt < 0 or prt > 10 or math.floor(prt) ~= prt) then stateProblems.PRIORITY_INVALID = tostring(config.priority) end
+  local fi = tonumber(config.fadeIn)
+  if fi ~= nil and fi > 2.5 then stateProblems.FADE_TOO_LONG = "fadeIn > 2.5s" end
+  local fo = tonumber(config.fadeOut)
+  if fo ~= nil and fo > 2.5 then stateProblems.FADE_TOO_LONG = "fadeOut > 2.5s" end
+  out.stateAudit = stateProblems
+  if sequence then
+    out.motion_truth = Motion.motionRootMotion(sequence, target)
+    if out.motion_truth and out.motion_truth.moves then
+      table.insert(out.warnings, { code = "ROOT_MOVES",
+        detail = "controller moves through space (" .. (out.motion_truth.netDistance) .. " studs) - expected for walk/run; idle should be root-static" })
+    end
+  end
   return out
 end
 local function previewMotionAnimation(args:{ [string]: any }): { [string]: any }
@@ -2536,20 +2910,35 @@ end
 local function resolveSourceSequence(args:{ [string]: any }): Instance
   local pathArg = tostring(args.trackPath or "")
   local animId = tostring(args.animationId or "")
+  local seq = nil
   if pathArg ~= "" then
     local inst = findByPath(pathArg)
-    if not inst then error("not found " .. pathArg .. siblingHint(pathArg)) end
-    if not inst:IsA("KeyframeSequence") then error("not a KeyframeSequence: " .. inst:GetFullName()) end
-    return inst
+    if inst and inst:IsA("KeyframeSequence") then
+      seq = inst
+    elseif inst and inst:IsA("Folder") then
+      -- Durable manifest path: the folder is the manifest; pull sequencePath.
+      seq = rlManifestSeqOf(inst)
+    else
+      -- Manifest path or bare name that findByPath missed: resolve through
+      -- the manifest store (replicates resolveAnimationId's durable path).
+      local okS, animId2 = pcall(function() return resolveAnimationId({ path = pathArg }) end)
+      if okS and animId2 then seq = animCache[tostring(animId2)] end
+    end
   end
-  if animId ~= "" then
-    local seq = animCache[animId]
-    if seq then return seq end
-    local byPath = findByPath(animId)
-    if byPath and byPath:IsA("KeyframeSequence") then return byPath end
+  if not seq and animId ~= "" then
+    seq = animCache[animId]
+    if not seq then
+      local byPath = findByPath(animId)
+      if byPath and byPath:IsA("KeyframeSequence") then seq = byPath end
+    end
+    if not seq then
+      -- Durable name/manifest path passed as animationId.
+      local okS2, animId3 = pcall(function() return resolveAnimationId({ path = animId }) end)
+      if okS2 and animId3 then seq = animCache[tostring(animId3)] end
+    end
   end
-  error("trackPath or animationId required (e.g. trackPath=Workspace/RoLinkAnimations/HelloWave)")
-  return nil :: any
+  if not seq then error("trackPath or animationId required (e.g. trackPath=Workspace/RoLinkAnimations/HelloWave)") end
+  return seq
 end
 local function exportAnimationClip(args:{ [string]: any }): { [string]: any }
   local seq = resolveSourceSequence(args)
@@ -2881,16 +3270,30 @@ local function rlModelAddMarker(args: { [string]: any }): { [string]: any }
   if t > duration then error("marker time " .. t .. "s is beyond duration " .. duration .. "s") end
   local ev = nil
   if args.event ~= nil and tostring(args.event) ~= "" then ev = tostring(args.event):sub(1, 64) end
+  -- Game-meaningful payload: footstep/hit/release markers carry their VFX,
+  -- sound and target so gameplay logic can be generated from read-back alone.
+  local payload = nil
+  if args.payload ~= nil and args.payload ~= false then
+    local okP, encP = pcall(function() return HttpService:JSONEncode((args.payload::any)) end)
+    if not okP then
+      error("marker '" .. name .. "': payload must be JSON-safe (got " .. tostring(encP):sub(1, 100) .. ")")
+    end
+    payload = args.payload
+  end
+  local function mkMarker(tm: number)
+    if payload ~= nil then return { t = tm, name = name, event = ev, payload = payload } end
+    return { t = tm, name = name, event = ev }
+  end
   local replaced = false
   for i, m in ipairs(markers) do
     if tostring((m :: any).name) == name then
-      markers[i] = { t = t, name = name, event = ev }
+      markers[i] = mkMarker(t)
       replaced = true
       break
     end
   end
   if not replaced then
-    table.insert(markers, { t = t, name = name, event = ev })
+    table.insert(markers, mkMarker(t))
     table.sort(markers, function(a, b) return num((a :: any).t, 0) < num((b :: any).t, 0) end)
   end
   if ev then
@@ -2902,6 +3305,173 @@ local function rlModelAddMarker(args: { [string]: any }): { [string]: any }
   end
   rlAnimWrite(anim, folder, tracks, markers, events)
   return { animation = anim, markers = markers }
+end
+
+-- bind_animation_events (2.11.0): wire gameplay consequences (footstep sfx +
+-- dust, hit-frame hitbox toggles, release-frame sync) to animation markers so
+-- gameplay reads correctly. Emits a standalone LocalScript + normalized
+-- bindings; target paths were resolved with findByPath at bind time, so the
+-- model sees exactly what the runtime will get.
+local function rlModelBindEvents(args: { [string]: any }): { [string]: any }
+  local anim = tostring(args.anim or "")
+  local folder, tracks, markers = rlAnimRead(anim)
+  local byName: { [string]: any } = {}
+  for _, m in ipairs(markers) do byName[tostring((m::any).name)] = m end
+  local bindings: { [string]: any } = {}
+  local fires: { [string]: any } = {}
+  local markerNames: { string } = {}
+  local warnings: { string } = {}
+  if type(args.bindings) ~= "table" or #args.bindings == 0 then
+    error("VALIDATION_ERROR: bindings* [{marker, action, seconds?, params?}] is required - read markers with get_animation_info first")
+  end
+  for i, b in ipairs(args.bindings) do
+    if type(b) ~= "table" then continue end
+    local marker = tostring((b::any).marker or "")
+    local m = byName[marker]
+    if not m then
+      error("MARKER_NOT_FOUND: no marker '" .. marker:sub(1, 40) .. "' in '" .. anim:sub(1, 40) .. "' - run add_animation_marker + get_animation_info first")
+    end
+    local action = tostring((b::any).action or ""):sub(1, 64)
+    local valid = action == "play_sound" or action == "create_vfx" or action == "shake_camera"
+      or action == "enable_hitbox" or action == "disable_hitbox"
+    if not valid then
+      error("VALIDATION_ERROR: binding " .. i .. " has unknown action '" .. action:sub(1, 40)
+        .. "' - use play_sound, create_vfx, shake_camera, enable_hitbox or disable_hitbox")
+    end
+    local seconds = num((b::any).seconds or (m::any).t, 0)
+    if seconds < 0 then seconds = 0 end
+    local params = (b::any).params
+    if type(params) ~= "table" then params = {} end
+    if action == "play_sound" and not params.soundId then
+      error("VALIDATION_ERROR: binding " .. i .. " (play_sound) needs params.soundId - find audio via search_asset{category='Audio'} first, never invent an id")
+    end
+    if (action == "enable_hitbox" or action == "disable_hitbox") and not params.hitbox then
+      error("VALIDATION_ERROR: binding " .. i .. " (" .. action .. ") needs params.hitbox (the BasePart name on the target model)")
+    end
+    table.insert(markerNames, marker)
+    local fire = { t = seconds, marker = marker, action = action, params = params }
+    table.insert(fires, fire)
+    bindings[#bindings + 1] = fire
+  end
+  table.sort(fires, function(a, b) return num(a.t, 0) < num(b.t, 0) end)
+  table.sort(markerNames)
+  -- Emit a standalone LocalScript. All values are JSON-safe by construction.
+  local escQ = function(s: string): string return string.format("%q", tostring(s)) end
+  local function escParam(k: string, v: any): (string?)
+    if type(v) == "string" then return string.format("%s = %s", escQ(k), escQ(v))
+    elseif type(v) == "number" then return string.format("%s = %g", escQ(k), v)
+    elseif type(v) == "boolean" then return string.format("%s = %s", escQ(k), v and "true" or "false")
+    end
+    return nil
+  end
+  local lines: { string } = {
+    '-- Generated by RoLink bind_animation_events for ' .. escQ(anim),
+    '-- Fires actions when the animation passes marker times. Pair with preview_animation_contact_sheet to check pose truth.',
+    'local RunService = game:GetService("RunService")',
+    'local Workspace = game:GetService("Workspace")',
+    'local markerNames = {' .. table.concat(markerNames, ", ") .. '}',
+    'local fires = {',
+  }
+  for _, f in ipairs(fires) do
+    local p: { string } = {}
+    for k, v in pairs((f.params::any) or {}) do
+      local e = escParam(k, v)
+      if e then table.insert(p, e) end
+    end
+    table.insert(lines, string.format('  { t = %.3f, marker = %s, action = %s, params = { %s } },',
+      num(f.t, 0), escQ(f.marker), escQ(f.action), table.concat(p, ", ")))
+  end
+  table.insert(lines, '}')
+  table.insert(lines, [[
+local function resolve(path)
+  local cur = Workspace
+  for part in string.gmatch(path or "", "[^/]+") do
+    if part == "Workspace" then cur = Workspace
+    elseif part == "ReplicatedStorage" then cur = game:GetService("ReplicatedStorage")
+    elseif cur then cur = cur:FindFirstChild(part, true) end
+    if not cur then return nil end
+  end
+  return cur
+end
+
+local function playSound(params)
+  local id = params.soundId or params.SoundId
+  if not id then return end
+  local snd = Instance.new("Sound")
+  snd.SoundId = tostring(id)
+  snd.Volume = math.clamp(tonumber(params.volume or 1) or 1, 0, 10)
+  snd.Parent = Workspace
+  snd:Play()
+end
+
+local function createVfx(params)
+  -- Realistic impact VFX = a ParticleEmitter on the target.
+  local target = resolve(params.path) or Workspace
+  local pe = Instance.new("ParticleEmitter")
+  pe.Name = params.name or "RoLinkVfx"
+  pe.Size = params.sizeSequence or SizeSequence.new(tonumber(params.sizeSeed or 2) or 2)
+  pe.Lifetime = params.lifetimeSequence or LifetimeSequence.new(tonumber(params.duration or 0.6) or 0.6)
+  pe.Rate = math.clamp(params.rate or 30, 1, 100)
+  pe.TextureSpeed = params.speed or 10
+  pe.LightEmission = 1
+  local c = params.color or params.colorSequence
+  if type(c) == "table" then
+    pe.Color = ColorSequence.new(Color3.new(tonumber(c[1] or 1) or 1, tonumber(c[2] or 1) or 1, tonumber(c[3] or 1) or 1))
+  else
+    pe.Color = ColorSequence.new(Color3.new(0.6, 0.9, 1))
+  end
+  pe.Parent = target
+  task.wait(tonumber(params.duration or 0.6) or 0.6)
+  if pe.Parent then pe:Destroy() end
+end
+
+local function shakeCamera(params)
+  -- Camera shake via workspace.CurrentCamera oscillation.
+  local cam = workspace.CurrentCamera
+  if not cam then return end
+  local original = cam.CFrame
+  local amp = math.clamp(tonumber(params.amplitude or 0.4) or 0.4, 0, 2)
+  local dur = math.clamp(tonumber(params.duration or 0.5) or 0.5, 0, 5)
+  local t = 0
+  while t < dur do
+    cam.CFrame = original + Vector3.new(math.sin(t * 4) * amp * 0.5, math.sin(t * 4 + 1) * amp, 0)
+    t += 0.03
+  end
+  cam.CFrame = original
+  -- Camera shake complete
+end
+
+local function fire(f)
+  local p = f.params or {}
+  if f.action == "play_sound" then playSound(p)
+  elseif f.action == "create_vfx" then createVfx(p)
+  elseif f.action == "shake_camera" then shakeCamera(p)
+  elseif f.action == "enable_hitbox" or f.action == "disable_hitbox" then
+    local target = resolve(p.hitbox and (p.hitbox.path or p.hitbox) or p.path)
+    if target then target.Enabled = f.action == "enable_hitbox" end
+  end
+end
+
+-- Sequential fires keyed off script-start (marker times relative to playback).
+local baseline = RunService.clock()
+for _, f in ipairs(fires) do
+  local delta = f.t + baseline - RunService.clock()
+  if delta > 0 then task.wait(delta) end
+  fire(f)
+end
+]])
+  local name = anim:sub(1, 48) .. "_Events"
+  local scriptSource = table.concat(lines, "\n")
+  return {
+    animation = anim,
+    bindings = bindings,
+    markerNames = markerNames,
+    script = name,
+    scriptSource = scriptSource,
+    warnings = warnings,
+    installWith = "create_instance { className: 'LocalScript', name: '" .. escQ(name):gsub('"', '') .. "' } then set_script_content{path='<script path>', content=<scriptSource>}",
+    note = "LocalScript is not parented - install it via create_instance/set_script_content so it ships. Actions verify via preview_animation_contact_sheet (pose truth) and Play-mode observation (gameplay).",
+  }
 end
 
 local function rlAnimSetLocked(folder: Instance, set: { [string]: boolean })
@@ -2968,6 +3538,87 @@ local function rlTrackNames(tracks: any): { string }
   for k in pairs(tracks) do table.insert(out, tostring(k)) end
   table.sort(out)
   return out
+end
+-- ── Animation truth metrics (2.11.0) ────────────────────────────────────────
+-- Seam score, velocity spikes, and a schematic sparkline so AI can judge
+-- motion quality from read-back alone instead of guessing from numbers.
+local function rlSeamScore(dr: number, dp: number): number
+  -- 0-100: 0 = loop endpoints match, 100 = full drift. Rotations count ~2.5x
+  -- translates (a pose pop is more visible than a 1-stud wobble) and both are
+  -- capped so one pathological track cannot saturate the scale.
+  return math.clamp(math.floor(dr * 0.55 + dp * 2.5), 0, 100)
+end
+-- Seam scores below this read as a pop a loop-aware engine should close.
+rlSeamScore.bridgeThreshold = 50
+-- Seam tip text rides on rlSeamScore (field, not a chunk-local function).
+rlSeamScore.tip = function(dr: number, dp: number): string
+  if dr > 1 or dp > 0.5 then
+    return "copy the first key pose onto the last key (loop endpoints match)"
+  end
+  return "ok - loop endpoints match"
+end
+local function rlValidateSpikes(keys: { [string]: any }, track: string): { [string]: any }
+  local spikes: { [string]: any } = {}
+  for i = 2, #keys do
+    local dt = num(keys[i].t, 0) - num(keys[i - 1].t, 0)
+    if dt <= 1e-9 then continue end
+    local rv = rlMag3(keys[i - 1].rot or {}, keys[i].rot or {}) / dt
+    local pv = rlMag3(keys[i - 1].pos or {}, keys[i].pos or {}) / dt
+    if rv > RL_ROT_WARN or pv > RL_POS_WARN then
+      local sev = if rv > RL_ROT_ERR or pv > RL_POS_ERR then "error" else "warning"
+      table.insert(spikes, {
+        track = track, keyIndex = i,
+        degPerSecond = math.floor(rv + 0.5),
+        studsPerSecond = rlRound2(pv),
+        severity = sev,
+        hint = (sev == "error") and "spread the motion over more time or ease it" or "consider easing the arrival",
+      })
+    end
+  end
+  return spikes
+end
+local function rlAnimationSparkline(samples: { [string]: any }): string
+  -- Ease-curve sparkline: maps [0,1] samples into an 8-level ASCII ladder
+  -- (▁▂▃▄▅▆▇█) so overshoot/settle is visible in tool output without pixels.
+  local ladder = { 0x2581, 0x2582, 0x2583, 0x2584, 0x2585, 0x2586, 0x2587, 0x2588 }
+  local n = #ladder
+  local vals: { number } = {}
+  local mn, mx = 1, 0
+  for _, v in ipairs(samples) do
+    local c = math.clamp(num(v, 0), 0, 1)
+    vals[#vals + 1] = c
+    mn = math.min(mn, c)
+    mx = math.max(mx, c)
+  end
+  if #vals == 0 then return "(no samples)" end
+  if mx - mn < 1e-4 then return string.rep(string.char(ladder[n]), #vals) end
+  local out = string.rep(string.char(ladder[1]), #vals)
+  for i, v in ipairs(vals) do
+    local l = math.max(1, math.ceil((v - mn) / (mx - mn) * n))
+    local ch = string.char(ladder[l])
+    out = string.sub(out, 0, i - 1) .. ch .. string.sub(out, i + 1)
+  end
+  return out
+end
+-- Per-track easing sparkline: arrival-curve fraction per segment, so the AI
+-- sees overshoot and settle without pixels.
+local function rlTrackSparkline(keys: { [string]: any }): string
+  local s: { number } = {}
+  for i = 2, #keys do
+    local span = num(keys[i].t, 0) - num(keys[i - 1].t, 0)
+    if span > 1e-9 then
+      local ef = EASE_FNS[tostring(keys[i].ease or "linear")] or EASE_FNS.linear
+      for k = 1, 10 do
+        if #s >= 40 then break end
+        table.insert(s, ef(k / 11))
+      end
+      if #s >= 40 then break end
+    end
+  end
+  if #s == 0 then
+    for i = 1, 8 do table.insert(s, i / 8) end
+  end
+  return rlAnimationSparkline(s)
 end
 local function rlModelPreview(args: { [string]: any }): { [string]: any }
   local anim = tostring(args.anim or "")
@@ -3052,6 +3703,9 @@ local function rlModelValidate(args: { [string]: any }): { [string]: any }
   local duration = 0
   pcall(function() duration = num(folder:GetAttribute("duration"), 0) end)
   if duration < 0.1 or duration > 60 then err("BAD_DURATION", "duration " .. tostring(duration) .. " outside 0.1-60s", "recreate with a sane duration") end
+  -- Task 4.4: root-motion audit (net displacement; big moves read as walk/run).
+  local rootMotion = nil
+  if sequence then rootMotion = Motion.motionRootMotion(sequence, target) end
   local names = rlTrackNames(tracks)
   if #names == 0 then err("EMPTY", "no tracks (write keys with set_model_keyframe first)", "add at least one key") end
   local known: { [string]: boolean } = {}
@@ -3066,6 +3720,9 @@ local function rlModelValidate(args: { [string]: any }): { [string]: any }
   end
   local doLoop = false
   pcall(function() doLoop = folder:GetAttribute("loop") == true end)
+  local spikes: { [string]: any } = {}
+  local loopSeam: { [string]: any } = {}
+  local sparkline: { [string]: any } = {}
   for _, tn in ipairs(names) do
     local keys = tracks[tn].keys
     if type(keys) ~= "table" or #keys == 0 then
@@ -3077,7 +3734,7 @@ local function rlModelValidate(args: { [string]: any }): { [string]: any }
     end
     for i, k in ipairs(keys) do
       if EASE_FNS[(k :: any).ease] == nil then
-        err("BAD_EASING", "track '" .. tn:sub(1, 32) .. "' key " .. i .. " has easing '" .. tostring((k :: any).ease):sub(1, 24) .. "'", "set a suffixed easing (quadIn, not bare quad)")
+        err("BAD_EASING", "track '" .. tn:sub(1, 32) .. "' key " .. i .. " has easing '" .. tostring((k :: any).ease):sub(1, 24) .. "'", "set a valid easing (" .. EASE_LIST .. ")")
       end
       if i > 1 and num((k :: any).t, 0) < num(keys[i - 1].t, 0) - 1e-9 then
         err("TIME_ORDER", "track '" .. tn:sub(1, 32) .. "' key " .. i .. " goes backwards in time", "rewrite the keys in order")
@@ -3094,10 +3751,18 @@ local function rlModelValidate(args: { [string]: any }): { [string]: any }
         elseif pv > RL_POS_WARN then warn("LEAP", "track '" .. tn:sub(1, 32) .. "' moves " .. rlRound2(pv * dt) .. " studs into key " .. i, "verify the distance is intended") end
       end
     end
+    -- Animation truth: per-key velocity spikes + per-track ease sparkline.
+    if #keys >= 1 then
+      sparkline[tn] = rlTrackSparkline(keys)
+    end
+    for _, sp in ipairs(rlValidateSpikes(keys, tn)) do table.insert(spikes, sp) end
     if doLoop and #keys >= 2 then
       local a, b = keys[1], keys[#keys]
-      if rlMag3(a.rot, b.rot) > 1.0 or rlMag3(a.pos, b.pos) > 0.1 then
-        err("LOOP_MISMATCH", "track '" .. tn:sub(1, 32) .. "' loop ends do not match the start", "copy the first key pose onto the last key")
+      local dr, dp = rlMag3(a.rot, b.rot), rlMag3(a.pos, b.pos)
+      local seam = { score = rlSeamScore(dr, dp), rotDelta = rlRound2(dr), posDelta = rlRound2(dp), tip = rlSeamScore.tip(dr, dp) }
+      loopSeam[tn] = seam
+      if seam.score < rlSeamScore.bridgeThreshold then
+        err("LOOP_MISMATCH", "track '" .. tn:sub(1, 32) .. "' loop ends do not match the start (seam score " .. seam.score .. " < " .. rlSeamScore.bridgeThreshold .. ")", "fix_animation{planOnly:true} lists the auto-fix: close the loop by writing the first key pose at duration")
       end
     end
   end
@@ -3116,7 +3781,61 @@ local function rlModelValidate(args: { [string]: any }): { [string]: any }
       err("ORPHAN_EVENT", "event for missing marker '" .. tostring((e :: any).marker):sub(1, 40) .. "'", "add the marker first")
     end
   end
-  return { animation = anim, passed = #errors == 0, errors = errors, warnings = warnings }
+  return { animation = anim, passed = #errors == 0, errors = errors, warnings = warnings,
+    spikes = spikes, loopSeam = loopSeam, sparkline = sparkline, seamThreshold = rlSeamScore.bridgeThreshold }
+end
+
+-- Schematic "ghost ledger" for new-animation iteration: samples the
+-- animation via rlPoseAt (eased, ordered like the keys) per frame and
+-- returns the per-frame joint poses, plus per-track velocity peaks and loop
+-- seam score. Honest: pose-timeline snapshot, not pixels - use the contact
+-- sheet (preview_animation_contact_sheet) for the schematic overlap view.
+local function previewAnimationGhost(args: { [string]: any }): { [string]: any }
+  local anim = tostring(args.anim or "")
+  local folder, tracks, markers = rlAnimRead(anim)
+  local duration = 60
+  pcall(function() duration = num(folder:GetAttribute("duration"), 60) end)
+  local names = rlTrackNames(tracks)
+  local frames = math.clamp(math.floor(num(args.frames, 6) + 0.5), 2, 24)
+  local step = duration / math.max(1, frames - 1)
+  local snap = function(t: number): { [string]: any }
+    local s: { [string]: any } = {}
+    for _, tn in ipairs(names) do
+      local pos, rot = rlPoseAt(tracks[tn].keys, t)
+      s[tn] = { pos = { x = rlRound2(pos.x), y = rlRound2(pos.y), z = rlRound2(pos.z) },
+                rot = { x = rlRound2(rot.x), y = rlRound2(rot.y), z = rlRound2(rot.z) } }
+    end
+    return s
+  end
+  local samples: { [string]: any } = {}
+  for f = 1, frames do
+    local t = (f - 1) * step
+    samples[tostring(f)] = { t = t, poses = snap(t) }
+  end
+  local doLoop = false
+  pcall(function() doLoop = folder:GetAttribute("loop") == true end)
+  local velocityPeaks: { [string]: any } = {}
+  local loopSeam: { [string]: any } = {}
+  for _, tn in ipairs(names) do
+    local keys = tracks[tn].keys
+    local worst = 0
+    for _, sp in ipairs(rlValidateSpikes(keys, tn)) do
+      if sp.degPerSecond > worst then worst = sp.degPerSecond end
+    end
+    velocityPeaks[tn] = worst > 0 and math.floor(worst + 0.5) or 0
+    if doLoop and #keys >= 2 then
+      local a, b = keys[1], keys[#keys]
+      local dr, dp = rlMag3(a.rot, b.rot), rlMag3(a.pos, b.pos)
+      loopSeam[tn] = { score = rlSeamScore(dr, dp), tip = rlSeamScore.tip(dr, dp),
+                       rotDelta = rlRound2(dr), posDelta = rlRound2(dp) }
+    end
+  end
+  return {
+    animation = anim, frames = frames, duration = duration, joints = #names,
+    samples = samples, velocityPeaks = velocityPeaks, loopSeam = loopSeam,
+    rendered = false,
+    note = "Ghost ledger, not pixels: rlPoseAt samples of the animation's pose timeline per frame; compare successive frames, then refine with set_model_keyframe and re-preview.",
+  }
 end
 
 
@@ -4075,65 +4794,116 @@ local function rlModelBlend(args: { [string]: any }): { [string]: any }
     return c
   end)() or 0, keysTotal = total, duration = duration }
 end
+-- fix_animation: plan-first + confirm gate (brief: "Only mutate after
+-- confirm:true"). The default call audits, lists the full plan, and applies
+-- nothing; re-send with confirm:true to apply mutating fixes.
 local function rlModelFix(args: { [string]: any }): { [string]: any }
   local anim = tostring(args.anim or "")
+  local rep0 = rlModelValidate({ anim = anim })
   local folder, tracks, markers, events = rlAnimRead(anim)
-  local fixed: { string } = {}
-  for tn, tr in pairs(tracks) do
-    local keys = (tr :: any).keys
-    if type(keys) ~= "table" or #keys == 0 then
-      tracks[tn] = nil
-      table.insert(fixed, "dropped empty track " .. tostring(tn):sub(1, 40))
-    else
-      for _, k in ipairs(keys) do
-        if EASE_FNS[(k :: any).ease] == nil then
-          k.ease = "linear"
-          table.insert(fixed, "reset bad easing on " .. tostring(tn):sub(1, 32))
-          break
-        end
-      end
-    end
-  end
-  local doLoop = false
-  pcall(function() doLoop = folder:GetAttribute("loop") == true end)
-  if doLoop then
-    for tn, tr in pairs(tracks) do
-      local keys = (tr :: any).keys
-      if type(keys) == "table" and #keys >= 2 then
-        local a, b = keys[1], keys[#keys]
-        if rlMag3(a.rot, b.rot) > 1.0 or rlMag3(a.pos, b.pos) > 0.1 then
-          local function clone(v: any): any
-            return HttpService:JSONDecode(HttpService:JSONEncode(v))
-          end
-          b.pos = clone(a.pos)
-          b.rot = clone(a.rot)
-          table.insert(fixed, "closed loop on " .. tostring(tn):sub(1, 32))
-        end
-      end
-    end
-  end
   local duration = 60
   pcall(function() duration = num(folder:GetAttribute("duration"), 60) end)
-  for _, m in ipairs(markers) do
-    local t = num((m :: any).t, 0)
-    if t > duration then
-      m.t = duration
-      table.insert(fixed, "clamped marker " .. tostring((m :: any).name):sub(1, 32))
+  -- 1) Plan entries: audit errors (each now carries a structured `fix`) plus
+  --    actionable SEAM_BRIDGE entries for loops with a low seam score.
+  local planEntries: { [string]: any } = {}
+  for i, err in ipairs(rep0.errors or {}) do
+    table.insert(planEntries, {
+      index = #planEntries + 1,
+      code = tostring((err :: any).code),
+      detail = tostring((err :: any).detail or ""),
+      fix = (err :: any).fix,
+      mutating = ((err :: any).code == "TRACK_EMPTY" or (err :: any).code == "BAD_EASING"
+        or (err :: any).code == "MARKER_OOB" or (err :: any).code == "ORPHAN_EVENT"),
+    })
+  end
+  local seams: { [string]: any } = {}
+  for tn, tr in pairs(tracks) do
+    local keys = (tr :: any).keys
+    local seam = rep0.loopSeam and rep0.loopSeam[tn]
+    if seam and seam.score < rlSeamScore.bridgeThreshold and keys and #keys >= 1 then
+      local first = keys[1]
+      table.insert(planEntries, {
+        index = #planEntries + 1,
+        code = "SEAM_BRIDGE", track = tostring(tn), seamScore = seam.score,
+        detail = "track '" .. tostring(tn) .. "' loop seam score " .. seam.score
+          .. " < " .. rlSeamScore.bridgeThreshold .. " - write the first key pose onto the duration key to close the loop",
+        fix = { tool = "set_model_keyframe", args = {
+          anim = anim, track = tostring(tn), t = duration,
+          pose = { position = (first::any).pos or {x=0,y=0,z=0},
+                   rotation = (first::any).rot or {x=0,y=0,z=0} },
+          ease = "linear" } },
+        mutating = true,
+      })
+      seams[tostring(tn)] = seam
     end
   end
-  local have: { [string]: boolean } = {}
-  for _, m in ipairs(markers) do have[tostring((m :: any).name)] = true end
-  local kept: { [string]: any } = {}
-  for _, e in ipairs(events) do
-    if have[tostring((e :: any).marker)] then
-      table.insert(kept, e)
-    else
-      table.insert(fixed, "dropped orphan event for " .. tostring((e :: any).marker):sub(1, 32))
+  local plan = { count = #planEntries, autoFixes = 0, seams = seams, entries = planEntries }
+  for _, e in ipairs(planEntries) do if e.mutating then plan.autoFixes += 1 end end
+  -- 2) Apply pass: mutating entries only; manual entries stay listed.
+  local applied = 0
+  local mutated = false
+  if args.confirm == true then
+    for _, entry in ipairs(planEntries) do
+      local appliedNow = false
+      if entry.mutating then
+        if entry.code == "TRACK_EMPTY" then
+          for name, tr in pairs(tracks) do
+            local keys = (tr :: any).keys
+            if (type(keys) ~= "table" or #keys == 0) and tostring(name) ~= "" then
+              tracks[name] = nil
+              mutated = true
+              appliedNow = true
+            end
+          end
+        elseif entry.code == "BAD_EASING" then
+          for _, tr in pairs(tracks) do
+            if type((tr :: any).keys) == "table" then
+              for _, k in ipairs((tr :: any).keys) do
+                if EASE_FNS[(k :: any).ease] == nil then (k :: any).ease = "linear" break end
+              end
+              mutated = true
+              appliedNow = true
+            end
+          end
+        elseif entry.code == "MARKER_OOB" then
+          for _, m in ipairs(markers) do
+            if num((m :: any).t, 0) > duration then (m :: any).t = duration mutated = true end
+          end
+          appliedNow = true
+        elseif entry.code == "ORPHAN_EVENT" then
+          local have: { [string]: boolean } = {}
+          for _, m in ipairs(markers) do have[tostring((m :: any).name)] = true end
+          local kept: { [string]: any } = {}
+          for _, e2 in ipairs(events) do
+            if have[tostring((e2 :: any).marker)] then table.insert(kept, e2) end
+          end
+          events = kept
+          mutated = true
+          appliedNow = true
+        elseif entry.code == "SEAM_BRIDGE" and entry.fix then
+          local ok = pcall(function() rlModelSetKey(entry.fix.args) end)
+          if ok then mutated = true appliedNow = true end
+        end
+      end
+      if appliedNow then applied += 1 end
     end
+    if mutated then rlAnimWrite(anim, folder, tracks, markers, events) end
   end
-  rlAnimWrite(anim, folder, tracks, markers, kept)
-  local rep = rlModelValidate({ anim = anim })
-  return { animation = anim, fixed = fixed, remaining = { errors = rep.errors, warnings = rep.warnings }, passed = rep.passed }
+  -- 3) Post-apply state: only re-audit after a real apply.
+  local rep1 = rep0
+  if args.confirm == true and mutated then
+    rep1 = rlModelValidate({ anim = anim })
+  end
+  return {
+    animation = anim,
+    passed = rep1.passed,
+    plan = plan,
+    applied = applied,
+    remaining = { errors = rep1.errors, warnings = rep1.warnings },
+    note = if args.confirm == true and mutated
+      then "applied mutating fixes - see remaining for manual attention; re-run fix_animation or validate_model_animation to re-check"
+      else "no changes applied - read the plan (entries + plan.autoFixes) and re-send with confirm:true to apply auto-fixes; manual entries are read-only suggestions.",
+  }
 end
 local function rlModelWriteFresh(args: { [string]: any }, tracks: { [string]: any }, markers: { [string]: any }): { [string]: any }
   local path = tostring(args.target or "")
@@ -4244,6 +5014,609 @@ local function rlModelWalk(args: { [string]: any }): { [string]: any }
     rlKeyAt(tracks, s, duration, 0, 0, 0, "sineInOut")
   end
   return rlModelWriteFresh(args, tracks, {})
+end
+
+-- ── AI-native preset library (2.11.0): text-to-animation scaffolds ────────
+-- Curated, rig-portable presets (R6/R15 share names: Head, Torso, Left Arm,
+-- Right Arm, Left Leg, Right Leg) that the model can instantiate or tweak.
+local function rlEasingList(set: { [string]: boolean }): { string }
+  local out: { string } = {}
+  for k in pairs(set) do table.insert(out, k) end
+  table.sort(out)
+  return out
+end
+local AnimationPresets: { [string]: any } = {
+  {
+    name = "wave_hi", tags = { "greeting", "gesture", "wave" },
+    aliases = "wave, waving, wave hello, hello, hi, hand wave, waving arm, waves",
+    summary = "wave hello: right arm lifts and open-palms toward viewer, sway slightly",
+    loop = false, duration = 1.4,
+    poses = {
+      { part = "Right Arm", keys = {
+        { t = 0, rot = { x = 0, y = -40, z = -40 } },
+        { t = 0.45, rot = { x = 0, y = 10, z = -50 }, ease = "quadOut" },
+        { t = 0.85, rot = { x = 0, y = -40, z = -10 }, ease = "quadIn" },
+        { t = 1.35, rot = { x = 0, y = -30, z = -25 }, ease = "sineInOut" },
+      } },
+      { part = "Torso", keys = {
+        { t = 0, rot = { x = 0, y = 0, z = 0 } },
+        { t = 0.5, rot = { x = 0, y = 6, z = 0 }, ease = "sineInOut" },
+        { t = 1.4, rot = { x = 0, y = 6, z = 0 }, ease = "sineInOut" },
+      } },
+    },
+  },
+  {
+    name = "jump_land", tags = { "athletic" },
+    aliases = "jump, hop, landing, touchdown, spring, bounce, high bounce",
+    summary = "burst crouch: legs flex then pop back up",
+    loop = false, duration = 0.8,
+    poses = {
+      { part = "Right Leg", keys = {
+        { t = 0, rot = { x = 0, y = 35, z = 0 } },
+        { t = 0.15, rot = { x = 0, y = 45, z = 0 }, ease = "quadOut" },
+        { t = 0.45, rot = { x = 0, y = -35, z = 0 }, ease = "sineInOut" },
+        { t = 0.8, rot = { x = 0, y = -45, z = 0 }, ease = "quadIn" },
+      } },
+      { part = "Torso", keys = {
+        { t = 0, rot = { x = 0, y = 0, z = 0 } },
+        { t = 0.25, rot = { x = 0, y = -15, z = 0 }, ease = "quadOut" },
+      } },
+    },
+  },
+  {
+    name = "zombie_shambler", tags = { "horror" },
+    aliases = "zombie, shamble, lurch, groan, undead, decay",
+    summary = "slow lurching stagger with bent torso and hunched shoulders",
+    loop = true, duration = 2.4,
+    poses = {
+      { part = "Torso", keys = {
+        { t = 0, rot = { x = 0, y = -25, z = 0 } },
+        { t = 1.5, rot = { x = 0, y = -35, z = 0 }, ease = "quadOut" },
+        { t = 2.4, rot = { x = 0, y = -25, z = 0 }, ease = "sineInOut" },
+      } },
+      { part = "Head", keys = {
+        { t = 0, rot = { x = 0, y = 5, z = 0 } },
+        { t = 1.5, rot = { x = 0, y = 15, z = 0 }, ease = "quadOut" },
+        { t = 2.4, rot = { x = 0, y = 5, z = 0 }, ease = "sineInOut" },
+      } },
+      { part = "Left Arm", keys = {
+        { t = 0, rot = { x = 0, y = 0, z = 0 } },
+        { t = 1.5, rot = { x = 0, y = 0, z = 15 }, ease = "sineInOut" },
+        { t = 2.4, rot = { x = 0, y = 0, z = 0 }, ease = "quadInOut" },
+      } },
+    },
+  },
+  {
+    name = "celebration", tags = { "festive" },
+    aliases = "celebration, cheer, cheers, joyful, cheers fist, party",
+    summary = "raised palms + bouncy torsso loop for cheers",
+    loop = true, duration = 1.3,
+    poses = {
+      { part = "Left Arm", keys = {
+        { t = 0, rot = { x = 0, y = 0, z = 0 } },
+        { t = 0.3, rot = { x = 0, y = 20, z = 0 }, ease = "quadOut" },
+        { t = 0.75, rot = { x = 0, y = 20, z = 0 }, ease = "sineInOut" },
+        { t = 1.2, rot = { x = 0, y = 0, z = 0 }, ease = "quadIn" },
+      } },
+      { part = "Right Arm", keys = {
+        { t = 0, rot = { x = 0, y = 0, z = 0 } },
+        { t = 0.3, rot = { x = 0, y = -20, z = 0 }, ease = "quadOut" },
+        { t = 0.6, rot = { x = 0, y = -20, z = 0 }, ease = "sineInOut" },
+        { t = 1.2, rot = { x = 0, y = 0, z = 0 }, ease = "quadIn" },
+      } },
+      { part = "Head", keys = {
+        { t = 0, rot = { x = 0, y = 5, z = 0 }, ease = "sineInOut" },
+        { t = 0.75, rot = { x = 0, y = 5, z = 0 }, ease = "sineInOut" },
+        { t = 1.3, rot = { x = 0, y = 5, z = 0 }, ease = "sineInOut" },
+      } },
+    },
+  },
+  {
+    name = "dance_classic", tags = { "pulses" },
+    aliases = "dance, dancing, bouncy, swaying, swing dance, finger",
+    summary = "neutral-hip sway loop: torso and arms sway side to side",
+    loop = true, duration = 1.5,
+    poses = {
+      { part = "Torso", keys = {
+        { t = 0, rot = { x = 0, y = 0, z = 0 } },
+        { t = 0.7, rot = { x = 0, y = 15, z = 0 }, ease = "quadOut" },
+        { t = 1.5, rot = { x = 0, y = 0, z = 0 }, ease = "sineInOut" },
+      } },
+      { part = "Head", keys = {
+        { t = 0, rot = { x = 0, y = 5, z = 0 }, ease = "sineInOut" },
+        { t = 0.75, rot = { x = 0, y = 0, z = 0 }, ease = "sineInOut" },
+        { t = 1.5, rot = { x = 0, y = 5, z = 0 }, ease = "sineInOut" },
+      } },
+      { part = "Left Arm", keys = {
+        { t = 0, rot = { x = 0, y = 0, z = -15 }, ease = "sineInOut" },
+        { t = 0.7, rot = { x = 0, y = -5, z = -30 }, ease = "sineInOut" },
+        { t = 1.5, rot = { x = 0, y = 0, z = -15 }, ease = "sineInOut" },
+      } },
+      { part = "Right Arm", keys = {
+        { t = 0, rot = { x = 0, y = 0, z = 15 }, ease = "sineInOut" },
+        { t = 0.7, rot = { x = 0, y = 5, z = 30 }, ease = "sineInOut" },
+        { t = 1.5, rot = { x = 0, y = 0, z = 15 }, ease = "sineInOut" },
+      } },
+    },
+  },
+  {
+    name = "death_collapse", tags = { "death" },
+    aliases = "death, die, dying, collapse, falling death, take down",
+    summary = "arms curl down, head dips as the character falls",
+    loop = false, duration = 1.3,
+    poses = {
+      { part = "Right Arm", keys = {
+        { t = 0, rot = { x = 0, y = 0, z = 0 } },
+        { t = 0.3, rot = { x = 0, y = -30, z = 0 }, ease = "quadOut" },
+        { t = 0.8, rot = { x = 0, y = -60, z = 0 }, ease = "quadIn" },
+        { t = 1.3, rot = { x = 0, y = -60, z = 0 }, ease = "sineInOut" },
+      } },
+      { part = "Right Leg", keys = {
+        { t = 0, rot = { x = 0, y = 0, z = 0 } },
+        { t = 0.3, rot = { x = 0, y = -45, z = 0 }, ease = "quadOut" },
+        { t = 0.7, rot = { x = 0, y = -60, z = 0 }, ease = "quadIn" },
+        { t = 1.3, rot = { x = 0, y = -60, z = 0 }, ease = "sineInOut" },
+      } },
+      { part = "Head", keys = {
+        { t = 0, rot = { x = 0, y = 5, z = 0 } },
+        { t = 0.5, rot = { x = 0, y = 0, z = 0 }, ease = "quadIn" },
+        { t = 1.3, rot = { x = 0, y = -15, z = 0 }, ease = "quadInOut" },
+      } },
+    },
+  },
+  {
+    name = "high_five", tags = { "gesture" },
+    aliases = "high five, high-five, fist bump, fist pump, bro fist, give five, fist bump",
+    summary = "right hand raised in a fist pose, left hand in greeting stance",
+    loop = false, duration = 1.0,
+    poses = {
+      { part = "Left Arm", keys = {
+        { t = 0, rot = { x = 0, y = -15, z = 10 } },
+        { t = 0.6, rot = { x = 0, y = 0, z = -20 }, ease = "sineInOut" },
+        { t = 1.2, rot = { x = 0, y = 0, z = -20 }, ease = "sineInOut" },
+      } },
+      { part = "Right Arm", keys = {
+        { t = 0, rot = { x = 0, y = 20, z = 10 } },
+        { t = 0.6, rot = { x = 0, y = 0, z = 0 }, ease = "sineInOut" },
+        { t = 1.2, rot = { x = 0, y = 0, z = 0 }, ease = "sineInOut" },
+      } },
+    },
+  },
+  {
+    name = "nod_yes", tags = { "affirmation" },
+    aliases = "nod, yes, affirmative, yep, acceptance, checking",
+    summary = "gentle head nod: up, down, up",
+    loop = false, duration = 1.0,
+    poses = {
+      { part = "Head", keys = {
+        { t = 0, rot = { x = 0, y = 5, z = 0 } },
+        { t = 0.5, rot = { x = 0, y = -20, z = 0 }, ease = "quadOut" },
+        { t = 1.0, rot = { x = 0, y = 5, z = 0 }, ease = "quadInOut" },
+      } },
+    },
+  },
+  {
+    name = "shake_head_no", tags = { "negating" },
+    aliases = "shake head, no, negating, nope, so no, no no",
+    summary = "rapid side-to-side head shake (3-4 fast back and forths)",
+    loop = false, duration = 0.9,
+    poses = {
+      { part = "Head", keys = {
+        { t = 0, rot = { x = 0, y = 5, z = 0 } },
+        { t = 0.2, rot = { x = 0, y = 15, z = 0 }, ease = "quadOut" },
+        { t = 0.4, rot = { x = 0, y = -5, z = 0 }, ease = "quadIn" },
+        { t = 0.65, rot = { x = 0, y = -15, z = 0 }, ease = "quadOut" },
+        { t = 0.9, rot = { x = 0, y = 5, z = 0 }, ease = "quadIn" },
+      } },
+    },
+  },
+  {
+    name = "robot_arm", tags = { "robots" },
+    aliases = "robot arm, robotic arm, mechanical arm, metallic arm, servo arm",
+    summary = "fake-robotic pose with one arm extended away and the elbow tucked",
+    loop = true, duration = 1.3,
+    poses = {
+      { part = "Right Arm", keys = {
+        { t = 0, rot = { x = 0, y = -35, z = -30 } },
+        { t = 0.35, rot = { x = 0, y = 0, z = -10 }, ease = "sineInOut" },
+        { t = 0.7, rot = { x = 0, y = 0, z = -10 }, ease = "quadOut" },
+        { t = 1.05, rot = { x = 0, y = -10, z = 0 }, ease = "quadIn" },
+        { t = 1.3, rot = { x = 0, y = -35, z = -30 }, ease = "sineInOut" },
+      } },
+    },
+  },
+  {
+    name = "pray_hands", tags = { "silence" },
+    aliases = "pray, prayer, palms together, palms joined, homegrown lilith",
+    summary = "palms pressed together at chest height (prayer/greeting gesture)",
+    loop = false, duration = 1.4,
+    poses = {
+      { part = "Right Arm", keys = {
+        { t = 0, rot = { x = 0, y = 0, z = 35 } },
+        { t = 0.5, rot = { x = 0, y = 0, z = 45 }, ease = "quadOut" },
+        { t = 1.4, rot = { x = 0, y = 0, z = 45 }, ease = "sineInOut" },
+      } },
+      { part = "Left Arm", keys = {
+        { t = 0, rot = { x = 0, y = 0, z = -35 } },
+        { t = 0.5, rot = { x = 0, y = 0, z = -45 }, ease = "quadOut" },
+        { t = 1.4, rot = { x = 0, y = 0, z = -45 }, ease = "sineInOut" },
+      } },
+    },
+  },
+  {
+    name = "stretch_tall", tags = { "stretches" },
+    aliases = "stretch, stretches, reaching up, arms up, sunlight stretch, reach",
+    summary = "arms stretch upward while the torso arches and head rises",
+    loop = false, duration = 1.4,
+    poses = {
+      { part = "Torso", keys = {
+        { t = 0, rot = { x = 0, y = 0, z = 0 } },
+        { t = 0.8, rot = { x = 0, y = 35, z = 0 }, ease = "quadOut" },
+        { t = 1.4, rot = { x = 0, y = 35, z = 0 }, ease = "sineInOut" },
+      } },
+      { part = "Head", keys = {
+        { t = 0, rot = { x = 0, y = 5, z = 0 }, ease = "sineInOut" },
+        { t = 0.85, rot = { x = 0, y = 45, z = 0 }, ease = "sineInOut" },
+      } },
+      { part = "Left Arm", keys = {
+        { t = 0, rot = { x = 0, y = 0, z = 10 }, ease = "sineInOut" },
+        { t = 0.8, rot = { x = 0, y = 20, z = 0 }, ease = "sineInOut" },
+      } },
+      { part = "Right Arm", keys = {
+        { t = 0, rot = { x = 0, y = 0, z = -10 }, ease = "sineInOut" },
+        { t = 0.8, rot = { x = 0, y = -20, z = 0 }, ease = "sineInOut" },
+      } },
+    },
+  },
+  {
+    name = "fan_fold", tags = { "folding" },
+    aliases = "fold arms, arms folded, folding arms, arms together, crossed arms, concern pose",
+    summary = "arms press together at the chest and tilt down (folding)",
+    loop = false, duration = 0.9,
+    poses = {
+      { part = "Left Arm", keys = {
+        { t = 0, rot = { x = 0, y = 10, z = -25 } },
+        { t = 0.4, rot = { x = 0, y = -10, z = -5 }, ease = "quadOut" },
+        { t = 0.9, rot = { x = 0, y = -10, z = -5 }, ease = "sineInOut" },
+      } },
+      { part = "Right Arm", keys = {
+        { t = 0, rot = { x = 0, y = -10, z = 25 } },
+        { t = 0.4, rot = { x = 0, y = 10, z = 5 }, ease = "quadOut" },
+        { t = 0.9, rot = { x = 0, y = 10, z = 5 }, ease = "sineInOut" },
+      } },
+      { part = "Torso", keys = {
+        { t = 0, rot = { x = 0, y = 0, z = 0 } },
+        { t = 0.45, rot = { x = 0, y = 10, z = 0 }, ease = "sineInOut" },
+        { t = 0.9, rot = { x = 0, y = 10, z = 0 }, ease = "sineInOut" },
+      } },
+    },
+  },
+  {
+    name = "swimmer", tags = { "swimming" },
+    aliases = "swimmer, swimming, treading, treading water, float, breastsroke, kickboard",
+    summary = "stylized swim: torso arches forward, arms stroke front and back",
+    loop = true, duration = 1.5,
+    poses = {
+      { part = "Torso", keys = {
+        { t = 0, rot = { x = 0, y = 45, z = 0 } },
+        { t = 0.5, rot = { x = 0, y = 40, z = 0 }, ease = "sineInOut" },
+        { t = 1.5, rot = { x = 0, y = 45, z = 0 }, ease = "sineInOut" },
+      } },
+      { part = "Head", keys = {
+        { t = 0, rot = { x = 0, y = -5, z = 0 }, ease = "sineInOut" },
+        { t = 0.75, rot = { x = 0, y = -10, z = 0 }, ease = "sineInOut" },
+        { t = 1.5, rot = { x = 0, y = -5, z = 0 }, ease = "sineInOut" },
+      } },
+      { part = "Left Arm", keys = {
+        { t = 0, rot = { x = 0, y = 0, z = -35 } },
+        { t = 0.4, rot = { x = 0, y = -30, z = -20 }, ease = "quadOut" },
+        { t = 0.8, rot = { x = 0, y = -35, z = -25 }, ease = "sineInOut" },
+      } },
+      { part = "Right Arm", keys = {
+        { t = 0, rot = { x = 0, y = 0, z = 35 } },
+        { t = 0.4, rot = { x = 0, y = 30, z = 20 }, ease = "quadOut" },
+        { t = 0.8, rot = { x = 0, y = 35, z = 25 }, ease = "sineInOut" },
+      } },
+    },
+  },
+  {
+    name = "victory_sign", tags = { "victory" },
+    aliases = "victory, v sign, peace sign, peace fingers, two fingers up, livess sign",
+    summary = "raised V fingers on the right hand (victory pose), arm raised",
+    loop = false, duration = 1.4,
+    poses = {
+      { part = "Right Arm", keys = {
+        { t = 0, rot = { x = 0, y = 0, z = 20 }, ease = "quadOut" },
+        { t = 0.3, rot = { x = 0, y = 0, z = 50 }, ease = "sineInOut" },
+        { t = 1.4, rot = { x = 0, y = 0, z = 50 }, ease = "sineInOut" },
+      } },
+      { part = "Left Arm", keys = {
+        { t = 0, rot = { x = 0, y = 0, z = -10 }, ease = "sineInOut" },
+        { t = 0.3, rot = { x = 0, y = 0, z = -10 }, ease = "sineInOut" },
+      } },
+    },
+  },
+  {
+    name = "sword_swing", tags = { "weapon" },
+    aliases = "sword swing, sword slash, strike, weapon swing, machete swing, heavy swing, falchion swing, katana swing",
+    summary = "sword hip-stance wind-up: arm winds back then swings forward with brace",
+    loop = false, duration = 1.1,
+    poses = {
+      { part = "Right Arm", keys = {
+        { t = 0, rot = { x = 0, y = -30, z = -30 }, ease = "quadOut" },
+        { t = 0.3, rot = { x = 0, y = 20, z = -40 }, ease = "quadOut" },
+        { t = 0.7, rot = { x = 0, y = 0, z = -10 }, ease = "sineInOut" },
+        { t = 1.1, rot = { x = 0, y = 0, z = -10 }, ease = "sineInOut" },
+      } },
+      { part = "Right Leg", keys = {
+        { t = 0, rot = { x = 0, y = 0, z = 0 } },
+        { t = 0.2, rot = { x = 0, y = -10, z = 0 }, ease = "sineInOut" },
+        { t = 0.5, rot = { x = 0, y = 0, z = 0 }, ease = "sineInOut" },
+      } },
+      { part = "Torso", keys = {
+        { t = 0, rot = { x = 0, y = 0, z = 0 } },
+        { t = 0.2, rot = { x = 0, y = 10, z = 0 }, ease = "quadOut" },
+        { t = 0.5, rot = { x = 0, y = 10, z = 0 }, ease = "quadOut" },
+        { t = 1.1, rot = { x = 0, y = 10, z = 0 }, ease = "sineInOut" },
+      } },
+    },
+  },
+  {
+    name = "surrender", tags = { "submission" },
+    aliases = "surrender, surrendered, pleading, palms up, hands up",
+    summary = "arms swing up and down in surrender ( surrendered pose)",
+    loop = false, duration = 1.6,
+    poses = {
+      { part = "Right Arm", keys = {
+        { t = 0, rot = { x = 0, y = -30, z = -35 } },
+        { t = 0.4, rot = { x = 0, y = 20, z = 15 }, ease = "quadOut" },
+        { t = 0.9, rot = { x = 0, y = 20, z = 15 }, ease = "sineInOut" },
+        { t = 1.6, rot = { x = 0, y = -30, z = -35 }, ease = "quadInOut" },
+      } },
+      { part = "Right Leg", keys = {
+        { t = 0, rot = { x = 0, y = 0, z = 0 }, ease = "sineInOut" },
+        { t = 0.6, rot = { x = 0, y = -20, z = 0 }, ease = "sineInOut" },
+      } },
+    },
+  },
+  {
+    name = "point_forward", tags = { "indicating" },
+    aliases = "point forward, pointing forward, indicating, introduction, first time",
+    summary = "right hand points forward while the palm faces down",
+    loop = false, duration = 1.1,
+    poses = {
+      { part = "Right Arm", keys = {
+        { t = 0, rot = { x = 0, y = 0, z = -10 } },
+        { t = 0.3, rot = { x = 0, y = 10, z = 0 }, ease = "quadOut" },
+        { t = 1.1, rot = { x = 0, y = 10, z = 0 }, ease = "sineInOut" },
+      } },
+      { part = "Left Arm", keys = {
+        { t = 0, rot = { x = 0, y = 0, z = -10 }, ease = "sineInOut" },
+        { t = 0.3, rot = { x = 0, y = 0, z = -10 }, ease = "sineInOut" },
+      } },
+    },
+  },
+  {
+    name = "sit_down", tags = { "sitting" },
+    aliases = "sit, sitting, sit down, crouch, crouched, stool, stool down",
+    summary = "character plops into a crouch (body bends low)",
+    loop = false, duration = 0.8,
+    poses = {
+      { part = "Torso", keys = {
+        { t = 0, rot = { x = 0, y = 0, z = 0 }, ease = "sineInOut" },
+        { t = 0.4, rot = { x = 0, y = -45, z = 0 }, ease = "quadOut" },
+        { t = 0.7, rot = { x = 0, y = -45, z = 0 }, ease = "sineInOut" },
+      } },
+      { part = "Right Leg", keys = {
+        { t = 0, rot = { x = 0, y = 0, z = 0 }, ease = "sineInOut" },
+        { t = 0.3, rot = { x = 0, y = -30, z = 0 }, ease = "quadOut" },
+        { t = 0.7, rot = { x = 0, y = -30, z = 0 }, ease = "sineInOut" },
+      } },
+      { part = "Left Leg", keys = {
+        { t = 0, rot = { x = 0, y = 0, z = 0 }, ease = "sineInOut" },
+        { t = 0.3, rot = { x = 0, y = 0, z = -20 }, ease = "quadOut" },
+        { t = 0.7, rot = { x = 0, y = 0, z = -20 }, ease = "sineInOut" },
+      } },
+      { part = "Head", keys = {
+        { t = 0, rot = { x = 0, y = 5, z = 0 }, ease = "sineInOut" },
+        { t = 0.7, rot = { x = 0, y = 5, z = 0 }, ease = "sineInOut" },
+      } },
+    },
+  },
+  -- ── Task 4.2: retarget (R6/R15 joint-name remap) ──────────────────────
+  retargetMap = {
+    Head = "Head", Torso = "Torso", Waist = "HumanoidRootPart",
+    ["Right Arm"] = "Right Arm", ["Left Arm"] = "Left Arm",
+    ["Right Shoulder"] = "Right Shoulder", ["Left Shoulder"] = "Left Shoulder",
+    ["Right Elbow"] = "Right Elbow", ["Left Elbow"] = "Left Elbow",
+    ["Right Wrist"] = "Right Wrist", ["Left Wrist"] = "Left Wrist",
+    ["Right Hand"] = "Right Wrist", ["Left Hand"] = "Left Wrist",
+    ["Right Leg"] = "Right Leg", ["Left Leg"] = "Left Leg",
+    ["Right Knee"] = "Right Knee", ["Left Knee"] = "Left Knee",
+    ["Right Ankle"] = "Right Ankle", ["Left Ankle"] = "Left Ankle",
+    HumanoidRootPart = "HumanoidRootPart",
+  },
+  retarget = function(args: { [string]: any }): { [string]: any }
+    local anim = tostring(args.anim or "")
+    local folder, tracks, markers, events = rlAnimRead(anim)
+    local rigA = findByPath(tostring(args.fromRig or args.source or ""))
+    local rigB = findByPath(tostring(args.toRig or args.target or ""))
+    if not rigA then error("retarget_animation: fromRig not found: '" .. tostring(args.fromRig or args.source or ""):sub(1, 120) .. "'") end
+    if not rigB then error("retarget_animation: toRig not found: '" .. tostring(args.toRig or args.target or ""):sub(1, 120) .. "'") end
+    local newName = Motion.motionCleanName(tostring(args.newName or ""), ""):sub(1, 64)
+    if newName == "" then newName = tostring(anim):match("([^/\\]+)$"):gsub("^(.*)$", "%1_RT") end
+    if newName == "" then newName = "Retarget_" .. tostring(anim):sub(1, 48) end
+    if rlAnimFolder(newName) and args.confirm ~= true then
+      error("CONFIRM_REQUIRED: model animation '" .. newName .. "' already exists - re-send with confirm:true to overwrite")
+    end
+    local scale = math.clamp(num(args.scale, 1), 0.05, 8)
+    local mapOverride = type(args.map) == "table" and args.map or {}
+    local norm = function(s: string): string
+      return tostring(s):gsub("[^%w]", ""):lower()
+    end
+    local outTracks: { [string]: any } = {}
+    local unmapped: { string } = {}
+    local mapped = 0
+    for tn, tr in pairs(tracks) do
+      local keys = (tr :: any).keys
+      if type(keys) ~= "table" then continue end
+      local targetTrack = tostring(mapOverride[tostring(tn)] or "")
+      local j
+      if targetTrack ~= "" then
+        j = rigB:FindFirstChild(targetTrack)
+      else
+        j = rigB:FindFirstChild(tostring(tn)) or rigB:FindFirstChild(AnimationPresets.retargetMap[tostring(tn)] or "")
+        if not j then
+          local tnNorm = norm(tostring(tn))
+          for _, d in ipairs(rigB:GetDescendants()) do
+            if norm(d.Name) == tnNorm then j = d break end
+          end
+        end
+      end
+      if not j then table.insert(unmapped, tostring(tn)) continue end
+      local newKeys: { [string]: any } = {}
+      for _, k in ipairs(keys) do
+        local pos = (k :: any).pos or {}
+        local rot = (k :: any).rot or {}
+        table.insert(newKeys, {
+          t = num(k.t, 0),
+          pos = { x = num(pos.x, 0) * scale, y = num(pos.y, 0) * scale, z = num(pos.z, 0) * scale },
+          rot = { x = num(rot.x, 0), y = num(rot.y, 0), z = num(rot.z, 0) },
+          ease = tostring(k.ease or "linear"),
+        })
+      end
+      outTracks[tostring(tn)] = { kind = "custom", keys = newKeys }
+      mapped += 1
+    end
+    local f = rlAnimFolder(newName)
+    if not f then
+      f = Instance.new("Folder")
+      f.Name = newName
+      f.Parent = rlAnimRoot()
+    end
+    for _, a in ipairs({ "duration", "fps", "loop" }) do
+      local v = rigB:GetAttribute(a)
+      if v ~= nil then f:SetAttribute(a, v) end
+    end
+    f:SetAttribute("target", rigB:GetFullName())
+    rlAnimWrite(newName, f, outTracks, {}, {})
+    local rep = rlModelValidate({ anim = newName })
+    return {
+      animation = newName,
+      target = rigB:GetFullName(),
+      scale = scale, tracks = mapped,
+      unmapped = #unmapped > 0 and unmapped or nil,
+      validate = { passed = rep.passed, errors = rep.errors },
+      tip = "preview_animation_contact_sheet + validate_model_animation; refine poses with set_model_keyframe",
+    }
+  end,
+}
+local function presetScore(p: any, dl: string): number
+  local score = 0
+  local aliases = tostring((p.aliases or "")):lower()
+  for w in dl:gmatch("[%a][%a%-]+") do
+    local wl = w:lower()
+    if aliases:find(wl, 1, true) then score += 6
+    elseif p.tags then
+      for _, tg in ipairs(p.tags) do
+        if tostring(tg) == wl then score += 3 break end
+      end
+    end
+    if p.name and dl:find(p.name, 1, true) then score += 4 end
+  end
+  return score
+end
+local function rlPresetKeys(pose: any): { [string]: any }
+  local keys: { [string]: any } = {}
+  for _, kd in ipairs(pose.keys or {}) do
+    local pos = (kd.pos or {})
+    local rot = (kd.rot or {})
+    table.insert(keys, {
+      t = num(kd.t, 0),
+      pos = { x = num(pos.x, 0), y = num(pos.y, 0), z = num(pos.z, 0) },
+      rot = { x = num(rot.x, 0), y = num(rot.y, 0), z = num(rot.z, 0) },
+      ease = resolveEasing(tostring(kd.ease or "sineInOut")) or "sineInOut",
+    })
+  end
+  table.sort(keys, function(a, b) return num((a::any).t, 0) < num((b::any).t, 0) end)
+  return keys
+end
+local function presetEasings(p: any): { string }
+  local set: { [string]: boolean } = {}
+  for _, pose in ipairs(p.poses or {}) do
+    for _, kd in ipairs(pose.keys or {}) do
+      set[resolveEasing(tostring(kd.ease or "sineInOut")) or "sineInOut"] = true
+    end
+  end
+  return rlEasingList(set)
+end
+-- list_animation_presets: read-only catalog of curated AI presets.
+local function listAnimationPresets(args: { [string]: any }): { [string]: any }
+  local wantRig = tostring(args.rig or ""):lower()
+  local wantTag = tostring(args.tag or ""):lower()
+  local out: { [string]: any } = {}
+  for _, p in ipairs(AnimationPresets) do
+    if wantRig ~= "" and p.rig and tostring(p.rig):lower() ~= wantRig then continue end
+    local hasTag = false
+    for _, tg in ipairs(p.tags or {}) do
+      if tostring(tg) == wantTag then hasTag = true break end
+    end
+    if wantTag ~= "" and not hasTag then continue end
+    table.insert(out, {
+      name = p.name, rig = p.rig or "any", tags = p.tags or {},
+      duration = p.duration, loop = p.loop == true, summary = p.summary,
+      easings = presetEasings(p),
+    })
+  end
+  return { presets = out, total = #out,
+    note = "call create_animation_from_description{description} to instantiate one, or set_model_keyframe to refine poses/times." }
+end
+-- create_animation_from_description: pick the best-matching preset by
+-- keyword scoring, write its keyframes through the normal model-anim engine.
+local function createAnimationFromDescription(args: { [string]: any }): { [string]: any }
+  local target = findByPath(tostring(args.target or ""))
+  if not target then error("Model not found: '" .. tostring(args.target or "") .. "' - pass the target Model path from analyze_animatable_model") end
+  local desc = tostring(args.description or "")
+  if desc == "" then error("description* is required (e.g. 'heavy sword swing', 'zombie shambler', 'looping text', 'happy jump')") end
+  local dl = desc:lower()
+  local scored: { [string]: any } = {}
+  for _, p in ipairs(AnimationPresets) do
+    local s = presetScore(p, dl)
+    if s > 0 then scored[#scored + 1] = { p = p, s = s } end
+  end
+  table.sort(scored, function(a, b) return a.s > b.s end)
+  if #scored == 0 or scored[1].s < 4 then
+    error("NO_PRESET_MATCH: '" .. desc:sub(1, 60) .. "' matches no curated preset - run list_animation_presets for the catalog or refine the description (action + style words like 'attack', 'celebration', 'ambush', 'groovy' work well)")
+  end
+  local best = scored[1].p
+  local tracks: { [string]: any } = {}
+  local missing: { string } = {}
+  for _, pose in ipairs(best.poses or {}) do
+    local tn = tostring(pose.part)
+    if not (target:FindFirstChild(tn) or target:FindFirstChild(tn, true)) then
+      table.insert(missing, tn)
+      continue
+    end
+    tracks[tn] = { kind = "custom", keys = rlPresetKeys(pose) }
+  end
+  table.sort(missing)
+  local trackCount = 0
+  for _ in pairs(tracks) do trackCount += 1 end
+  if trackCount == 0 then
+    error("NO_TRACKS: preset '" .. best.name .. "' joints are not on the target rig - use list_animation_presets to see matching presets")
+  end
+  local wa = table.clone(args)
+  if type(wa.name) ~= "string" or wa.name == "" then wa.name = best.name end
+  local res = rlModelWriteFresh(wa, tracks, {})
+  return {
+    created = true, preset = best.name, description = desc,
+    target = res.target, duration = res.duration, fps = res.fps, loop = res.loop,
+    trackCount = trackCount, names = rlTrackNames(tracks),
+    resolvedEasings = presetEasings(best),
+    missingJoints = #missing > 0 and missing or nil,
+    note = (#missing > 0) and ("joints not found on the rig: " .. table.concat(missing, ", ") .. " - the preset wrote the rest; use the names above for refinement") or nil,
+    tip = "preview_animation_contact_sheet + validate_model_animation; refine poses with set_model_keyframe{t, pose}, easings with set_model_easing{keyIndex, ease}",
+  }
 end
 
 
@@ -4368,6 +5741,94 @@ local function studioSceneMap(args:{ [string]: any }): { [string]: any }
   return { svg = svg, width = W, height = H, partsPlotted = plotted, partsSkipped = skipped,
     uiRects = uiCount, viewport = { math.floor(vp.X), math.floor(vp.Y) },
     note = "Schematic projection from CurrentCamera, not pixels: Studio exposes no pixel capture to plugins. Circles = parts, orange rects = UI. Use it for overlap/layout reasoning, not art review." }
+end
+
+-- Schematic pose contact sheet for animations. Plugins cannot capture pixels
+-- (and screenshot_studio is a plain schematic map), so animation previews
+-- project the verified pose (rlPoseAt, which already replays easing curves)
+-- of each sampled frame onto a stick-figure SVG through workspace.CurrentCamera.
+-- Shows limb overlap/pop-through at a glance without pretending to be art.
+local function previewAnimationContactSheet(args:{ [string]: any }): { [string]: any }
+  local anim = tostring(args.anim or "")
+  local folder, tracks, markers = rlAnimRead(anim)
+  local duration = 60
+  pcall(function() duration = num(folder:GetAttribute("duration"), 60) end)
+  local names = rlTrackNames(tracks)
+  local frames = math.clamp(math.floor(num(args.frames, 6) + 0.5), 2, 12)
+  local W = 320
+  -- Stick-figure chains: R6+R15 names; unknown rigs render labeled dots.
+  local chains = {
+    Head = { "Head", "Torso" }, Neck = { "Neck", "Torso" }, Torso = { "Torso", "HumanoidRootPart" },
+    ["Left Arm"] = { "Left Arm", "Torso" }, ["Right Arm"] = { "Right Arm", "Torso" },
+    ["Left Leg"] = { "Left Leg", "Torso" }, ["Right Leg"] = { "Right Leg", "Torso" },
+    HumanoidRootPart = { "HumanoidRootPart" },
+  }
+  local function screenPt(pos: any): ({ x: number, y: number }?, boolean)
+    return pcall(function()
+      local c = workspace.CurrentCamera
+      if not c then return nil, false end
+      local sp, vis = c:WorldToScreenPoint((pos or Vector3.zero))
+      if not vis then return nil, false end
+      return { x = math.clamp(sp.X, -4, W + 4), y = math.clamp(sp.Y, -4, 220 + 4) }, true
+    end)
+  end
+  -- Stable anchor: screen position of each tracked joint at t=0 (reference).
+  local posOf: { [string]: { x: number, y: number } } = {}
+  for _, tn in ipairs(names) do
+    local pos = rlPoseAt(tracks[tn].keys, 0)
+    local p, ok = screenPt(pos)
+    if ok then posOf[tostring(tn)] = p end
+  end
+  local anyDots, frameRows, samples = 0, {}::{ string }, {}::{ [string]: any }
+  for f = 1, frames do
+    local t = duration * (f - 1) / math.max(frames - 1, 1)
+    -- Per-frame sampled world poses of all joints (rlPoseAt replays easings).
+    local sampled: { [string]: { x: number, y: number } } = {}
+    for _, tn in ipairs(names) do
+      local pos = rlPoseAt(tracks[tn].keys, t)
+      local p, ok = screenPt(pos)
+      if ok then sampled[tostring(tn)] = p end
+    end
+    anyDots += 0; for _ in pairs(sampled) do anyDots += 1 end
+    local row: { string } = {}
+    local rowJoints: { [string]: { x: number, y: number, label: string } } = {}
+    local x0 = W * (f - 1)
+    for _, tn in ipairs(names) do
+      local chain = chains[tostring(tn)]
+      if chain and #chain >= 2 then
+        local segs: { { x: number, y: number, label: string } } = {}
+        for _, cn in ipairs(chain) do
+          local p = sampled[cn] or posOf[cn]
+          if p then table.insert(segs, { x = p.x + x0, y = p.y, label = cn }) end
+        end
+        for i = 2, #segs do
+          local a, b = segs[i - 1], segs[i]
+          table.insert(row, string.format('<line x1="%.0f" y1="%.0f" x2="%.0f" y2="%.0f" stroke="#6c5ce7" stroke-width="2"/>',
+            a.x, a.y, b.x, b.y))
+        end
+        for _, p in ipairs(segs) do
+          table.insert(row, string.format('<circle cx="%.0f" cy="%.0f" r="3" fill="#9cdaff"><title>%s @t=%.1fs</title></circle>',
+            p.x, p.y, p.label, t))
+        end
+        for i, p in ipairs(segs) do rowJoints[tostring(i)] = p end
+      end
+    end
+    table.insert(row, string.format('<text x="%d" y="18" font-size="10" fill="#fff" font-family="sans-serif">t=%.1fs</text>', x0 + 4, t))
+    table.insert(frameRows, string.format('<g>%s</g>', table.concat(row)))
+    samples[tostring(f)] = rowJoints
+  end
+  local svg = string.format('<svg xmlns="http://www.w3.org/2000/svg" width="%d" height="220" viewBox="0 0 %d 220"><rect width="%d" height="220" fill="#0b0e14"/>%s</svg>',
+    W * frames, W * frames, W * frames, table.concat(frameRows))
+  local markerNotes: { string } = {}
+  for _, m in ipairs(markers) do
+    table.insert(markerNotes, string.format('marker "%s" at t=%.1f', tostring((m::any).name), num((m::any).t, 0)))
+  end
+  return {
+    animation = anim, frames = frames, duration = duration, svg = svg,
+    joints = #names, visible = anyDots, markers = markerNotes, samples = samples,
+    projectedJoints = samples, rendered = false,
+    note = "Schematic contact sheet, not pixels: verified world poses (rlPoseAt, eased) projected through CurrentCamera; use it for overlap/pop-through. Press Play and watch to confirm anything that reads wrong."
+  }
 end
 
 local function playtestObserve(args:{ [string]: any }): { [string]: any }
@@ -5113,7 +6574,11 @@ local function executeCommand(cmd:any): (any, string?)
     elseif tool=="set_model_keyframe" then result=rlModelSetKey(args)
     elseif tool=="set_model_easing" then result=rlModelSetEase(args)
     elseif tool=="add_animation_marker" then result=rlModelAddMarker(args)
+    elseif tool=="preview_animation_contact_sheet" then result=previewAnimationContactSheet(args)
+    elseif tool=="bind_animation_events" then result=rlModelBindEvents(args)
     elseif tool=="set_track_lock" then result=rlModelTrackLock(args)
+    elseif tool=="list_animation_presets" then result=listAnimationPresets(args)
+    elseif tool=="create_animation_from_description" then result=createAnimationFromDescription(args)
     elseif tool=="preview_model_animation" then result=rlModelPreview(args)
     elseif tool=="validate_model_animation" then result=rlModelValidate(args)
     elseif tool=="retime_animation" then result=rlModelRetime(args)
@@ -5121,6 +6586,8 @@ local function executeCommand(cmd:any): (any, string?)
     elseif tool=="mirror_animation" then result=rlModelMirror(args)
     elseif tool=="blend_animation" then result=rlModelBlend(args)
     elseif tool=="fix_animation" then result=rlModelFix(args)
+    elseif tool=="preview_animation_ghost" then result=previewAnimationGhost(args)
+    elseif tool=="retarget_animation" then result=AnimationPresets.retarget(args)
     elseif tool=="create_attack_animation" then result=rlModelAttack(args)
     elseif tool=="create_idle_animation" then result=rlModelIdle(args)
     elseif tool=="create_walk_cycle" then result=rlModelWalk(args)

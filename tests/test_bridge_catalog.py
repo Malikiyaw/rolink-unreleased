@@ -32,8 +32,8 @@ class CatalogTest(unittest.TestCase):
         bridge.mgr = cls.mgr
 
     def test_registry_has_147_unique_tools(self):
-        self.assertEqual(len(self.registry), 154, f"registry has {len(self.registry)} tools")
-        self.assertEqual(len(set(self.registry)), 154, "registry has duplicates")
+        self.assertEqual(len(self.registry), 159, f"registry has {len(self.registry)} tools")
+        self.assertEqual(len(set(self.registry)), 159, "registry has duplicates")
 
     def test_unknown_names_fail_fast_with_suggestions(self):
         import time
@@ -71,9 +71,9 @@ class CatalogTest(unittest.TestCase):
         self.assertIn("plugin_version", body)
         self.assertIn("in_flight", body)
         self.assertIn("oldest_claim_age_s", body)
-        # Registry stays exactly 154: plugin_status/get_studio_state/get_memory/
+        # Registry stays exactly 158: plugin_status/get_studio_state/get_memory/
         # update_memory are built-ins, not registry tools.
-        self.assertEqual(len(self.registry), 154)
+        self.assertEqual(len(self.registry), 159)
         self.assertNotIn("plugin_status", self.registry)
         self.assertNotIn("get_studio_state", self.registry)
         self.assertNotIn("get_memory", self.registry)

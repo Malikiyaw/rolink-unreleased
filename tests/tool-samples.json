@@ -238,6 +238,34 @@
     ],
     "projectId": "test"
   },
+  "preview_animation_contact_sheet": {
+    "anim": "test",
+    "frames": 6,
+    "projectId": "test"
+  },
+  "bind_animation_events": {
+    "anim": "test",
+    "bindings": [
+      {
+        "marker": "test",
+        "action": "play_sound",
+        "params": {
+          "soundId": "rbxassetid://0"
+        }
+      }
+    ],
+    "projectId": "test"
+  },
+  "list_animation_presets": {
+    "rig": "any",
+    "projectId": "test"
+  },
+  "create_animation_from_description": {
+    "description": "test",
+    "target": "workspace",
+    "name": "test",
+    "projectId": "test"
+  },
   "create_motion_animation": {
     "target": "workspace.Rig",
     "name": "test",
@@ -789,6 +817,11 @@
     "anim": "test",
     "track": "test",
     "locked": true,
+    "projectId": "test"
+  },
+  "preview_animation_ghost": {
+    "anim": "test",
+    "frames": 6,
     "projectId": "test"
   },
   "preview_cutscene": {

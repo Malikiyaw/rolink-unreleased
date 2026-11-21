@@ -129,7 +129,8 @@ class PluginExecutionTest(unittest.TestCase):
         self.assertIn("non-decreasing", src)
         with open(os.path.join(ROOT, "mcp-server", "src", "tools", "registry.ts"), encoding="utf-8") as f:
             reg = f.read()
-        self.assertIn("quadInOut", reg)
+        self.assertIn('easing: z.string()', reg)
+        self.assertIn("bezierOut (overshoot)", reg)
 
     def test_cinematic_tools_wired(self):
         for name in ("create_cutscene", "create_dialogue", "create_motion_effect", "create_vfx"):
