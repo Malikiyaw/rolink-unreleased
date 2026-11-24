@@ -3,18 +3,26 @@
 
 const b = document.getElementById("bridge");
 const m = document.getElementById("mcp");
+const tok = document.getElementById("token");
 const s = document.getElementById("status");
 const ver = document.getElementById("ver");
-chrome.storage.local.get(["bridgeUrl", "mcpUrl"], v => {
+chrome.storage.local.get(["bridgeUrl", "mcpUrl", "bridgeToken"], v => {
   if (v.bridgeUrl) b.value = v.bridgeUrl;
   if (v.mcpUrl) m.value = v.mcpUrl;
+  // The bridge's browser-origin guard is always on; the token is only needed
+  // when the operator opted in with ROLINK_REQUIRE_TOKEN=1.
+  if (v.bridgeToken && tok) tok.value = v.bridgeToken;
 });
 chrome.runtime.sendMessage({ type: "version" }, r => {
   if (r && r.version) ver.textContent = "v" + r.version;
 });
 
 function save() {
-  chrome.storage.local.set({ bridgeUrl: b.value.trim(), mcpUrl: m.value.trim() }, () => {
+  chrome.storage.local.set({
+    bridgeUrl: b.value.trim(),
+    mcpUrl: m.value.trim(),
+    bridgeToken: tok ? tok.value.trim() : "",
+  }, () => {
     s.textContent = "Saved";
     s.className = "status ok";
     setTimeout(() => { s.textContent = ""; s.className = "status"; }, 1800);
@@ -22,9 +30,11 @@ function save() {
 }
 document.getElementById("save").onclick = save;
 b.onkeydown = m.onkeydown = e => { if (e.key === "Enter") save(); };
+if (tok) tok.onkeydown = e => { if (e.key === "Enter") save(); };
 document.getElementById("reset").onclick = () => {
   b.value = "ws://127.0.0.1:17613";
   m.value = "http://127.0.0.1:3001";
+  if (tok) tok.value = "";
   save();
 };
 

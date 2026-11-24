@@ -10,6 +10,14 @@ ROOT = os.path.dirname(HERE)
 sys.path.insert(0, ROOT)
 import bridge
 
+try:
+    from _catalog import load_catalog as _load_catalog
+except ImportError:  # invoked with a different sys.path
+    import os as _os, sys as _sys
+    _sys.path.insert(0, _os.path.dirname(_os.path.abspath(__file__)))
+    from _catalog import load_catalog as _load_catalog
+
+
 
 class PluginExecutionTest(unittest.TestCase):
     def test_infinite_loop_preflight(self):
@@ -134,8 +142,7 @@ class PluginExecutionTest(unittest.TestCase):
 
     def test_cinematic_tools_wired(self):
         for name in ("create_cutscene", "create_dialogue", "create_motion_effect", "create_vfx"):
-            with open(os.path.join(ROOT, "tests", "__registry__.json"), encoding="utf-8") as f:
-                self.assertIn(name, json.load(f))
+            self.assertIn(name, _load_catalog())
         with open(os.path.join(ROOT, "studio-plugin", "RoLink.lua"), encoding="utf-8") as f:
             src = f.read()
         for branch in ('tool=="create_cutscene"', 'tool=="create_dialogue"',
@@ -174,8 +181,7 @@ class PluginExecutionTest(unittest.TestCase):
 
     def test_clip_and_publish_wired(self):
         for name in ("export_animation_clip", "publish_animation"):
-            with open(os.path.join(ROOT, "tests", "__registry__.json"), encoding="utf-8") as f:
-                self.assertIn(name, json.load(f))
+            self.assertIn(name, _load_catalog())
         with open(os.path.join(ROOT, "studio-plugin", "RoLink.lua"), encoding="utf-8") as f:
             src = f.read()
         for branch in ('tool=="export_animation_clip"', 'tool=="publish_animation"',
@@ -289,9 +295,34 @@ class PluginExecutionTest(unittest.TestCase):
             with open(os.path.join(ROOT, rel), encoding="utf-8") as f:
                 src = f.read()
             flat = re.sub(r"\s+", "", src)
-            for name in ("pcall", "require", "assert", "select", "unpack"):
+            # `require` is deliberately NOT here: it was removed from the
+            # sandbox allowlist because it let sandboxed code load arbitrary
+            # ModuleScripts and defeat the point of the allowlist.
+            for name in ("pcall", "assert", "select", "unpack"):
                 self.assertRegex(flat, name + r"=" + name,
                                  "%s missing %s=..." % (rel, name))
+
+    def test_sandbox_excludes_require(self):
+        """The allowlist must not hand sandboxed code a module loader."""
+        for rel in ("studio-plugin/src/sandbox.luau",):
+            with open(os.path.join(ROOT, rel), encoding="utf-8") as f:
+                src = f.read()
+            env_start = src.find("M.safeEnv = {")
+            env_end = src.find("}", env_start)
+            self.assertGreaterEqual(env_start, 0)
+            env_block = src[env_start:env_end]
+            self.assertNotIn("require", env_block,
+                             "%s puts require back in the sandbox env" % rel)
+
+    def test_sandbox_fails_closed_without_setfenv(self):
+        """applyEnv must refuse to run code when setfenv is unavailable."""
+        with open(os.path.join(ROOT, "studio-plugin/src/sandbox.luau"), encoding="utf-8") as f:
+            src = f.read()
+        self.assertIn("M.available", src)
+        self.assertIn("sandbox unavailable", src)
+        rolink = open(os.path.join(ROOT, "studio-plugin/RoLink.lua"), encoding="utf-8").read()
+        self.assertIn("local envOk, envErr = applyEnv(res)", rolink)
+        self.assertIn("if not envOk then", rolink)
 
     def test_hanging_snippet_times_out_without_wedging(self):
         for rel in ("studio-plugin/RoLink.lua",

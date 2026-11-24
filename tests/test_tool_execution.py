@@ -6,6 +6,14 @@ import io, os, json, re, unittest
 HERE = os.path.dirname(os.path.abspath(__file__))
 ROOT = os.path.dirname(HERE)
 
+try:
+    from _catalog import load_catalog as _load_catalog
+except ImportError:  # invoked with a different sys.path
+    import os as _os, sys as _sys
+    _sys.path.insert(0, _os.path.dirname(_os.path.abspath(__file__)))
+    from _catalog import load_catalog as _load_catalog
+
+
 
 def read(*parts):
     with io.open(os.path.join(ROOT, *parts), encoding="utf-8", errors="replace") as f:
@@ -15,8 +23,7 @@ def read(*parts):
 class ExecutionTruthTest(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
-        with io.open(os.path.join(ROOT, "tests", "__registry__.json"), encoding="utf-8") as f:
-            cls.registry = json.load(f)
+        cls.registry = _load_catalog()
         cls.registry_ts = read("mcp-server", "src", "tools", "registry.ts")
         cls.queue_ts = read("mcp-server", "src", "commandQueue.ts")
         cls.protocol = read("shared", "protocol.ts")

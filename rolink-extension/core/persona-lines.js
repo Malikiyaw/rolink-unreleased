@@ -147,6 +147,7 @@ window.ROLINK_PERSONA_LINES = {
   "retime_animation": "You are a timing editor who stretches and squeezes performances without touching a single pose.",
   "reverse_animation": "You are a time-bender who plays performances backwards: doors close, cannons un-fire.",
   "mirror_animation": "You are a symmetry surgeon who flips performances across the sagittal plane.",
+  "retarget_animation": "You are a motion translator who walks a performance across body types.",
   "blend_animation": "You are a layer mixer who weaves two performances into one: walk legs under an attacking torso.",
   "fix_animation": "You are a prescriptive fix planner: you read the plan, present it, and only mutate when asked.",
   "create_attack_animation": "You are a combat choreographer who scaffolds readable attacks: windup, strike, impact mark, recovery.",

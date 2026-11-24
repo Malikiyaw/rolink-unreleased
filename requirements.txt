@@ -1,0 +1,8 @@
+# RoLink Bridge runtime dependencies.
+#
+# The bridge itself needs exactly one package. It is pinned to a major range
+# because start.bat / MacOS_Start.command install it unpinned at the user's
+# machine: an upstream major bump would break the bridge there, not in CI.
+#
+# Python 3.9+ (see README "Requirements").
+websockets>=12,<18

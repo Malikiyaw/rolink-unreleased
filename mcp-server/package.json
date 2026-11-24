@@ -1,19 +1,22 @@
 {
   "name": "rolink-mcp-server",
-  "version": "2.1.1",
+  "version": "2.11.0",
   "description": "RoLink MCP server - bridge between AI and Roblox Studio",
   "type": "module",
   "scripts": {
     "dev": "tsx watch src/index.ts",
     "build": "tsc -p tsconfig.json",
     "start": "node dist/mcp-server/src/index.js",
-    "test": "vitest run && node ../rolink-extension/test-parser.js && node ../rolink-extension/test-agent.js",
+    "test": "vitest run && node ../rolink-extension/test-parser.js && node ../rolink-extension/test-agent.js && node ../rolink-extension/test-chatgpt.js",
     "test:parser": "node ../rolink-extension/test-parser.js",
     "test:agent": "node ../rolink-extension/test-agent.js",
     "generate:code-fields": "tsx ../scripts/generate-code-fields.ts",
     "generate:prompts": "tsx ../scripts/generate-tool-prompts.ts",
     "generate:fixtures": "tsx ../scripts/generate-tool-fixtures.ts",
-    "audit:tools": "tsx ../scripts/generate-tool-audit.ts"
+    "audit:tools": "python3 ../scripts/audit_tools.py",
+    "test:ci": "vitest run",
+    "emit:tool-registry": "node ../scripts/emit-tool-registry.js",
+    "generate:all": "npm run generate:code-fields && npm run generate:prompts && npm run emit:tool-registry && node ../scripts/emit-code-fields.js"
   },
   "dependencies": {
     "@modelcontextprotocol/sdk": "^1.10.0",

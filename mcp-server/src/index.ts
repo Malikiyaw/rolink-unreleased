@@ -55,7 +55,11 @@ app.post("/queue/enqueue", (req, res) => {
   try {
     const cmd = commandQueue.enqueue({ tool, command, args, priority, timeoutMs, projectId });
     teamLog.append("info", projectId || "default", "mcp", `enqueue ${tool}`, { id: cmd.id });
-    rollbackManager.push({ id: cmd.id, projectId: projectId || "default", timestamp: Date.now(), tool, command: String(command).slice(0,5000) });
+    // History is only recorded for entries that carry real captured state
+    // (take_snapshot does that). Recording a command here without a snapshot
+    // created entries that could never be rolled back, while `rollback`
+    // reported them as undone - the fabricated receipt this module used to be.
+    // Use `snapshotBefore` in the request body when the caller has one.
     collabManager.broadcast(projectId || "default", "enqueue", { tool, id: cmd.id }, "mcp");
     console.log(`[enqueue] ${tool} id=${cmd.id} prio=${priority}`);
     res.json({ ok: true, id: cmd.id, queued: cmd });
@@ -131,7 +135,24 @@ app.get("/context", (req,res)=>{ const ctx = buildContext({ projectId: req.query
 app.get("/style", (req,res)=>{ const p = aiTraining.profile(req.query.projectId as string || "default"); res.json({ ok:true, profile:p }); });
 app.get("/perf", (req,res)=>{ const pid = req.query.projectId as string|undefined; res.json({ ok:true, stats: perfTracker.stats(pid), recent: perfTracker.recent(20, pid) }); });
 app.get("/rollback", (req,res)=>{ const pid = req.query.projectId as string || "default"; res.json({ ok:true, history: rollbackManager.list(pid, Number(req.query.limit||20)) }); });
-app.post("/rollback", (req,res)=>{ const pid = req.body?.projectId || "default"; const steps = Number(req.body?.steps || 1); const entries = rollbackManager.rollback(pid, steps); if (entries.length) cq.enqueue({ tool:"undo", command:"--rollback", args:{ steps: entries.length, projectId: pid } }); res.json({ ok:true, rolledBack: entries }); });
+app.post("/rollback", (req,res)=>{
+  const pid = req.body?.projectId || "default";
+  const steps = Number(req.body?.steps || 1);
+  const outcome = rollbackManager.rollback(pid, steps);
+  // Only enqueue a Studio undo for entries that actually carry a snapshot, and
+  // report honestly when there was nothing to undo (this endpoint used to
+  // answer ok:true with ok:true and an empty array, which reads as success).
+  if (outcome.ok) {
+    cq.enqueue({ tool:"undo", command:"--rollback",
+                 args:{ steps: outcome.restored.length, projectId: pid } });
+  }
+  res.status(outcome.ok ? 200 : 409).json({
+    ok: outcome.ok,
+    rolledBack: outcome.restored,
+    skipped: outcome.skipped,
+    ...(outcome.ok ? {} : { error: outcome.reason }),
+  });
+});
 
 // Phase C
 app.post("/visual/compile", (req,res)=>{ const r=compileGraph(req.body?.graph); if(!r.warnings.length) cq.enqueue({ tool:"run_code", command:r.luau, args:{ visual:true, projectId: req.body?.projectId||"default" }}); res.json({ ok:true, ...r }); });

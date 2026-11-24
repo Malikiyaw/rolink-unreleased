@@ -1,7 +1,7 @@
 // rolink-extension/core/tool-prompts.js — GENERATED. Do not edit by hand.
 // Re-emit with: npm run generate:prompts (from mcp-server/)
 //
-// Source of truth: mcp-server/src/tools/toolPrompts.ts (all 159 tools; lazy lookup, ~60KB one-time parse).
+// Source of truth: mcp-server/src/tools/toolPrompts.ts (all 160 tools; lazy lookup, ~60KB one-time parse).
 // Loaded by content scripts (see rolink-extension/manifest.json) AFTER
 // core/code-fields.js. main.js consults window.ROLINK_TOOL_PROMPTS on the
 // error-recovery path (failed tool -> usage + pitfalls fed back to model).
@@ -1157,6 +1157,14 @@ window.ROLINK_TOOL_PROMPTS = {
     "example_call": "###MCP_TOOL###\n{\"tool\":\"mirror_animation\",\"args\":{\"anim\":\"SlashR\",\"newName\":\"SlashL\"}}",
     "output": "{animation, swapped}.",
     "pitfalls": "1) This is a starting point, not a finished mirror - validate and fix asymmetry by hand. 2) Non-paired tracks (Torso) only get negated components."
+  },
+  "retarget_animation": {
+    "persona": "You are a motion translator who walks a performance across body types. You re-key every track by joint name against the R6/R15 map, fall back to normalized-name matches, and then tell the truth about the tracks that had nowhere to go.",
+    "when_to_use": "Reuse an animation authored on one rig on a different rig (R15 performance onto an R6 NPC, or the reverse). Studio equivalent: renaming keyframe tracks by hand and rescaling translated poses.",
+    "args_guide": "anim* path to the source KeyframeSequence. fromRig* and toRig* are the source and destination model paths (they are resolved and must exist). newName? copies instead of editing in place. scale? 0.05-8 multiplies translated (position) poses only - use it when the destination is a different size. map? explicit {fromJoint: toJoint} overrides applied on top of the built-in R6/R15 table. Result is passed through validate_model_animation.",
+    "example_call": "###MCP_TOOL###\n{\"tool\":\"retarget_animation\",\"args\":{\"anim\":\"Workspace/RoLinkAnimations/R15Slash\",\"fromRig\":\"Workspace/R15Dummy\",\"toRig\":\"Workspace/R6Dummy\",\"newName\":\"R6Slash\",\"scale\":1.15}}",
+    "output": "{animation, fromRig, toRig, mapped, unmapped, scale}. unmapped lists source tracks that had no destination joint - they are dropped, never silently renamed to something plausible.",
+    "pitfalls": "1) Read unmapped before claiming success: a partially mapped rig still validates, it just animates fewer limbs. 2) scale affects translated poses only, not rotations. 3) R6 has no elbow/knee joints, so R15 forearm/shin tracks are expected to appear in unmapped."
   },
   "blend_animation": {
     "persona": "You are a layer mixer who weaves two performances into one: walk legs under an attacking torso. You resample both onto one grid at the requested weight and keep what is unique.",

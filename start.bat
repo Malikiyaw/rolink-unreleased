@@ -146,7 +146,14 @@ echo   [2/3] Checking websockets library...
 %PY% -c "import websockets" >nul 2>nul
 if errorlevel 1 (
     echo         Installing websockets - first time only...
-    %PY% -m pip install --user websockets
+    REM Prefer the pinned range in requirements.txt (>=12,<18). An unpinned
+    REM install lets a future upstream major break the bridge on the user's
+    REM machine, which CI would never see.
+    if exist "%~dp0requirements.txt" (
+        %PY% -m pip install --user -r "%~dp0requirements.txt"
+    ) else (
+        %PY% -m pip install --user "websockets>=12,<18"
+    )
     if errorlevel 1 (
         echo.
         echo   ERROR: Could not install websockets ^(see pip output above^).

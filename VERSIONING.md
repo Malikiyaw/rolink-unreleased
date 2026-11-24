@@ -1,11 +1,35 @@
 # RoLink Versioning (SemVer)
 
-- **5.6.5** — 1000x Tool Visibility visual pass: category-neon chip stripe + running glow + settle shadows, stream cards with persona first-line + formatted args grid + marching-ants progress + OK/ERROR/STALE outcome badges, live-pill persona tooltip + error pulse + fade-out, popup relative last-used times. Carries the 5.6.1–5.6.4 boot fixes (bar fallback always runs, inline pill click, `feed is not defined` crash)
-- **5.6.0** — Pro-Max personas on all 111 tools (expert-voice persona + Studio-equivalence map + persona-led tooltips/error feedback) and 1000x tool visibility (live AI-USING pill, Tool Stream panel, anchor-never-miss → stream, popup live highlight + last-used)
-- **5.5.1** — Sprints 1-4 Super plan rebased on 5.5.0: parser DSML/wrongkey nudges, provider resilience pack, bar/chips/camouflage/popup v2, bgRun send-park, multi-MCP server_list, per-chat memory + session export/import, staged trace, stall watchdog, validate_command Luau pre-flight, offline switch_project, RL_BRIDGE_PORT alias
-- **5.5.0** — force emission first render second + manifest merge-marker fix
-- **5.4.0** — background run, narration guard, two-row result chips, all 111 master prompts
-- **4.2.0** — parser hardening, raw-field execution format, generated 111-tool fixtures/audit, provider-specific adapters, multi-MCP settings UI, release automation
-- **1.x–3.x** — historical releases
+`VERSION` is the single source of truth. Every other place the version is
+spelled out must match it, and `python scripts/check_versions.py` (run in CI and
+by `scripts/check_versions.py`) fails the build when they do not:
 
-The extension manifest, MCP package, parser/system-prompt version, bridge runtime version and release metadata should move together. Releases use `vMAJOR.MINOR.PATCH`; the tag workflow reads `VERSION` and creates the matching Git tag.
+| Where | What to look for |
+| --- | --- |
+| `VERSION` | the source of truth |
+| `bridge.py` | `BRIDGE_VERSION` |
+| `rolink-extension/manifest.json` | `version` |
+| `mcp-server/package.json` | `version` |
+| `studio-plugin/RoLink.lua` | `PLUGIN_VERSION` **and** the load banner |
+
+Releases are tagged `vMAJOR.MINOR.PATCH`; the tag matches `VERSION`.
+
+## Release process
+
+1. Bump `VERSION`, then the five mirrors above.
+2. Regenerate artifacts (`CONTRIBUTING.md` → "Generated files").
+3. Run the six pre-PR commands; the audit must report 0 failing.
+4. Update `README.md` (headline version, "New in X" section) and `CHANGELOG.md`.
+5. Tag `v<version>`.
+
+`README.md` states "Plugin reinstall required" for releases that change
+`studio-plugin/RoLink.lua`. It genuinely is required: Studio caches plugins at
+startup, so a running Studio keeps the old file.
+
+## Notes on history
+
+Earlier revisions of this file described a `5.6.x` line and a 111-tool
+catalogue. That numbering no longer refers to anything in the tree — the
+current line is `2.x` and the catalogue is defined by `catalog/tools.json`
+(currently 160 tools). Historical detail lives in `CHANGELOG.md`, which is the
+authoritative record for what shipped in each release.
