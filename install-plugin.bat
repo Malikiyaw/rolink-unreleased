@@ -81,7 +81,7 @@ echo     1. Open your place, press View ^> Command Bar, run:
 echo          game:GetService("HttpService").HttpEnabled = true
 echo        (lets the plugin reach the bridge queue on :3001)
 echo     2. Restart Studio if it was open. A "RoLink" toolbar button
-echo        appears, Output shows "RoLink 2.11.3 loaded [repo copy]",
+echo        appears, Output shows "RoLink 2.11.4 loaded [repo copy]",
 echo        and the bridge prints "plugin polling" when it connects.
 echo        No banner = the old copy is still installed; redo this
 echo        file with Studio fully closed.

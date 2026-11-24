@@ -7,7 +7,7 @@ local RunService = game:GetService("RunService")
 local MCP_URL = "http://127.0.0.1:3001"
 local POLL_INTERVAL = 0.2
 local PLUGIN_NAME = "RoLink 2.1"
-local PLUGIN_VERSION = "2.11.3"
+local PLUGIN_VERSION = "2.11.4"
 
 local toolbar = plugin:CreateToolbar(PLUGIN_NAME)
 local btn = toolbar:CreateButton("RoLink", "AI bridge (160 tools, poll 200ms)", "rbxassetid://0")
@@ -981,9 +981,18 @@ local function playAnimation(args:{ [string]: any }): { [string]: any }
   if args.loop == true then track.Looped = true end
   -- Edit mode never renders animation playback: say so honestly instead of a
   -- bare success the user then can't see. The track IS playing underneath.
+  -- Do NOT claim Play renders it: entering Play builds a fresh
+  -- Play DataModel with new Animator instances, so this Edit-session track does
+  -- not carry over and pressing Play shows nothing. The only honest advice is
+  -- to replay in a runtime Script, which docs/probes/ProbePlay.server.lua does.
   local ret:{ [string]: any } = { success = true, trackName = track.Name, animationId = animId }
   ret.rendered = false
-  ret.note = "Edit mode never renders animation playback - press Play to see it move."
+  ret.playbackVerifiable = false
+  ret.note = "Edit mode never renders animation playback, and pressing Play does not "
+    .. "carry this track over (Play gets fresh Animator instances), so a silent rig right "
+    .. "after Play proves nothing about the animation. To verify, replay the saved "
+    .. "KeyframeSequence from a runtime Script - template: docs/probes/ProbePlay.server.lua "
+    .. "(or execute_luau with datamodel_type=Edit and inspect the KeyframeSequence Poses)."
   return ret
 end
 local function clipCurvesSummary(clip: Instance): { [string]: any }
@@ -6831,4 +6840,4 @@ task.spawn(function() while true do task.wait(20); if enabled then pcall(functio
   if #workspace:GetDescendants()>600 then metrics.avgFPS=35 end
   HttpService:RequestAsync({Url=MCP_URL.."/metrics", Method="POST", Headers={["Content-Type"]="application/json"}, Body=HttpService:JSONEncode(metrics)})
 end) end end end)
-log("RoLink 2.11.3 loaded [repo copy] - 160 tools ready, polling "..MCP_URL)
+log("RoLink 2.11.4 loaded [repo copy] - 160 tools ready, polling "..MCP_URL)

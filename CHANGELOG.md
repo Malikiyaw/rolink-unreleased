@@ -121,6 +121,57 @@ instead of a floating package. Also: duplicate `run_sandbox_tests` dict key,
 three placeholder-less f-strings and one unused local in `bridge.py` (pyflakes is
 now clean).
 
+## [2.11.4] - 2026-11-24
+
+### Fix: the plugin's own advice sent a working fix hunting for a second bug
+
+After 2.11.3 fixed the real defect, `create_animation_track` built
+`Probe_RightArm` and `play_animation` returned success. It also returned
+`note = "Edit mode never renders animation playback - press Play to see it
+move."` That second sentence is false, and it cost a debugging cycle.
+
+**Entering Play builds a fresh Play DataModel.** Studio clones the place into
+it; `Animator` instances are new and none of them has the Edit-session track
+loaded. `Animation` objects loaded in Edit do not survive that boundary, so
+pressing Play shows a still rig regardless of whether the animation is correct.
+"Press Play to see it move" therefore describes a verification step that cannot
+work — and a silent rig reads as "the animation is broken".
+
+The note now reports `playbackVerifiable = false` and names a method that does
+work: replay the saved `KeyframeSequence` from a runtime Script.
+
+### New: `docs/probes/ProbePlay.server.lua`
+
+A ready-to-paste runtime probe. It runs **inside** the Play DataModel, so it
+does not depend on the Edit-session hash:
+
+- `WaitForChild` on the rig, Humanoid, Animator and
+  `Workspace/RoLinkAnimations/Probe_RightArm`, with a named `warn` for each miss
+- prints keyframe count and duration
+- reports the joint's **actual class** (`AnimationConstraint` vs `Motor6D`)
+- `RegisterKeyframeSequence` in the Play DataModel, then
+  `Animator:LoadAnimation` + `Play()` (never passes a KeyframeSequence to
+  `LoadAnimation`)
+- samples the joint's `Transform` (falling back to `C0`) at t=0, 0.25, 0.5, 1.0
+  and prints Y in degrees
+
+The verdict is a number, not an impression: if `RightShoulder` Y sweeps from
+`+0.0` toward `-45.0` and back, the `AnimationConstraint` rig animates. If it
+stays `+0.0`, `Pose.Name` does not drive that joint class and the rig needs
+Motor6Ds or a different playback path.
+
+Validated before shipping, in a real Lua runtime with a mocked Roblox API:
+all five paths exercised (AnimationConstraint rig, Motor6D rig, missing
+sequence, missing rig, `LoadAnimation` throwing). The four failure paths warn
+and return instead of erroring. `stylua --check` parses it; the repo syntax
+gate passes.
+
+### Guard
+
+`tests/test_tool_completeness.py` now pins the honest wording and asserts the
+false promise is gone, so the message cannot regress to advice that wastes the
+user's time.
+
 ## [2.11.3] - 2026-11-24
 
 ### Fix: create_animation_track died with "attempt to call a nil value"
