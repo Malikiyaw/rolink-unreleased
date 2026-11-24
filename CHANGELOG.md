@@ -121,6 +121,62 @@ instead of a floating package. Also: duplicate `run_sandbox_tests` dict key,
 three placeholder-less f-strings and one unused local in `bridge.py` (pyflakes is
 now clean).
 
+## [2.11.1] - 2026-11-24
+
+### Fix: 2.11.0 shipped a plugin Studio could not load
+
+Reported from Studio's Output as:
+
+```
+user_RoLink.lua:Script:660: Expected ')' (to close '(' at column 78), got '-'
+```
+
+A file-level syntax error means nothing in the plugin loads — no tag, no toolbar,
+and every registry tool fails with `plugin_offline`. There were **three** fatal
+errors in `studio-plugin/RoLink.lua`, not one; the first masked the rest.
+
+1. **Line 660 — parentheses around a whole function type.** `makeBezier` was
+   annotated `: (number -> number)`. In Luau `->` must sit at the top level of a
+   type; inside `(...)` the parser expects a type *list* and errors on `->` at
+   the opening paren (column 78, exactly as Studio reported). Now
+   `: (number) -> number`, matching how the file already annotates
+   `EASE_FNS: { [string]: (number) -> number }`.
+2. **Line 1541 — a type annotation on a field assignment.**
+   `Motion.MOTION_EASING_ENUMS: { [string]: boolean } = {`. Luau allows `: T` on
+   local declarations and function signatures only, never on `a.b = ...`. The
+   annotation was dropped; the table's shape is already implied by its literal.
+3. **Line 6581 — a table literal with no closing `}`.** The `play_sound`
+   `result = { ... }` value ended at `")` and fell straight into the next
+   `elseif`, so the whole diagnostic branch below it was parsed as table fields
+   and the reported error landed thousands of lines away from the cause. The
+   `}` is now closed on the line it belongs to.
+
+### The guard that was supposed to catch this
+
+`scripts/check_luau_blocks.py` printed `OK … blocks balanced, lines <= 900` for
+this file, and it was telling the truth — it balances `function/if/for/…end` and
+counts chunk locals. It does not read types or braces, so none of the three
+errors were in its remit. A syntax error in the one file that ships to users had
+no automated defence.
+
+New `scripts/check_luau_syntax.py` checks the three shapes above and reports
+`file:line:column` in Studio's format. It also runs a real Luau parser when one
+is installed (`luau` or `stylua` on `PATH`, or `STYLUA=/path`), and
+`stylua --check` reproduces the original message word for word —
+`unexpected token '->', expected ')' to close '('` — which is how the diagnosis
+was confirmed rather than guessed. Wired into `scripts/check_all.sh`,
+`docs/ci-workflow.yml`, and `tests/test_plugin_execution.py` (4 new tests: the
+shipped file must pass, and each of the three broken shapes plus the
+comment/string/method-call look-alikes is pinned).
+
+Verified against the real parser (stylua 2.6.0, full-moon): the fixed file
+parses; the 2.11.0 text does not. Reintroducing line 660 makes the new guard
+fail at `RoLink.lua:660:78` while `check_luau_blocks.py` still reports `OK`,
+which is the regression the gate exists to prevent.
+
+Version 2.11.0 → 2.11.1. **Plugin reinstall required.**
+
+
 ## [2.11.0] - 2026-10-05
 
 ### Sprint 3 (build engine): import-first kits + a model graph, catalog 151 → 154

@@ -108,6 +108,8 @@ jobs:
         run: pip install -r requirements-dev.txt
       - name: Luau block/line guard
         run: python scripts/check_luau_blocks.py
+      - name: Luau syntax guard (annotations, field assigns, braces)
+        run: python scripts/check_luau_syntax.py
       - name: Tool audit (0 failing required)
         run: python scripts/audit_tools.py
       - name: HUD registry matches the catalog

@@ -76,7 +76,7 @@ def _enable_ansi_colors():
 HOST = "127.0.0.1"
 # Keep in sync with rolink-extension/manifest.json "version" - printed at
 # startup so a user's terminal output alone tells us which build they're on.
-BRIDGE_VERSION = "2.11.0"
+BRIDGE_VERSION = "2.11.1"
 PORT = int(os.environ.get("ROLINK_BRIDGE_PORT", os.environ.get("RL_BRIDGE_PORT", "17613")))
 HERE = os.path.dirname(os.path.abspath(__file__))
 CONFIG_PATH = os.path.join(HERE, "config.json")
@@ -843,7 +843,7 @@ def _local_plugin_status(args):
         _names = [_c.get("name") for _c in _installed.get("copies", [])]
         if not _installed.get("exact_present"):
             _install_note = ("no RoLink.lua in %s (saw: %s) - quit Studio fully, run install-plugin.bat "
-                             "from THIS release folder, reopen; expect RoLink 2.11.0 loaded [repo copy]"
+                             "from THIS release folder, reopen; expect RoLink 2.11.1 loaded [repo copy]"
                              % (_installed.get("dir") or "?", _names or "nothing"))
         elif _installed.get("copy_count", 1) != 1:
             _install_note = ("duplicate plugin copies %s in %s - Studio loads ALL of them and they fight; "
@@ -851,7 +851,7 @@ def _local_plugin_status(args):
                              % (_names, _installed.get("dir") or "?"))
         else:
             _install_note = ("installed RoLink.lua differs from this folder (repo %s bytes) - reinstall from "
-                             "THIS folder with Studio fully closed; expect RoLink 2.11.0 loaded [repo copy]"
+                             "THIS folder with Studio fully closed; expect RoLink 2.11.1 loaded [repo copy]"
                              % (_installed.get("repo_size") or "?"))
     return {"ok": True, "text": json.dumps({
         "queue_up": bool(_queue_server_on[0]),

@@ -7,7 +7,7 @@ local RunService = game:GetService("RunService")
 local MCP_URL = "http://127.0.0.1:3001"
 local POLL_INTERVAL = 0.2
 local PLUGIN_NAME = "RoLink 2.1"
-local PLUGIN_VERSION = "2.11.0"
+local PLUGIN_VERSION = "2.11.1"
 
 local toolbar = plugin:CreateToolbar(PLUGIN_NAME)
 local btn = toolbar:CreateButton("RoLink", "AI bridge (160 tools, poll 200ms)", "rbxassetid://0")
@@ -657,7 +657,7 @@ local function resolveEasing(name:string): (string?)
   -- Task 4.1 dynamic easings:
   --  * bezier(x1,y1,x2,y2): cubic Bernstein curve registered under its literal name.
   --  * stepsN: piecewise-constant quantization (2/4/8/12 are named shorthands).
-  local function makeBezier(x1: number, y1: number, x2: number, y2: number): (number -> number)
+  local function makeBezier(x1: number, y1: number, x2: number, y2: number): (number) -> number
     -- Solve t for x(t)=u by bisection on the degree-3 Bernstein curve, then
     -- evaluate y(t). Standard P0=(0,0), P3=(1,1), P1=(x1,y1), P2=(x2,y2).
     local function x(t: number): number
@@ -1538,7 +1538,7 @@ function Motion.motionPoseCFrame(data:any): CFrame
     math.rad(num(r and (r :: any).z, 0)))
 end
 -- Easing names motionEasingParts can express on Roblox tracks.
-Motion.MOTION_EASING_ENUMS: { [string]: boolean } = {
+Motion.MOTION_EASING_ENUMS = {
   linear = true, quadIn = true, quadOut = true, quadInOut = true,
   cubicIn = true, cubicOut = true, cubicInOut = true,
   sineIn = true, sineOut = true, sineInOut = true,
@@ -6578,7 +6578,7 @@ local function executeCommand(cmd:any): (any, string?)
       result = {played = isPlaying == true, playRequested = true, isPlaying = isPlaying,
         isLoaded = isLoaded, assetId = tonumber(aid), path = "Workspace/" .. snd.Name,
         note = (isPlaying and "Sound.IsPlaying is true - playback started."
-          or "Sound instance created and :Play() issued, but Sound.IsPlaying is false: Roblox raises no error for a missing, unrated or unplayable asset, and in Edit mode nothing is audible. playback NOT confirmed - verify with playtest_scenario while the game is running, or press Play and listen.")
+          or "Sound instance created and :Play() issued, but Sound.IsPlaying is false: Roblox raises no error for a missing, unrated or unplayable asset, and in Edit mode nothing is audible. playback NOT confirmed - verify with playtest_scenario while the game is running, or press Play and listen.") }
     -- 120-124 Diagnostics + inspection (state truth, errors, UI, scene, playtest)
     elseif tool=="studio_probe" then result=probeStudio(args)
     elseif tool=="scan_errors" then result=scanOutputLog(args)
@@ -6808,4 +6808,4 @@ task.spawn(function() while true do task.wait(20); if enabled then pcall(functio
   if #workspace:GetDescendants()>600 then metrics.avgFPS=35 end
   HttpService:RequestAsync({Url=MCP_URL.."/metrics", Method="POST", Headers={["Content-Type"]="application/json"}, Body=HttpService:JSONEncode(metrics)})
 end) end end end)
-log("RoLink 2.11.0 loaded [repo copy] - 160 tools ready, polling "..MCP_URL)
+log("RoLink 2.11.1 loaded [repo copy] - 160 tools ready, polling "..MCP_URL)
