@@ -7,7 +7,7 @@ local RunService = game:GetService("RunService")
 local MCP_URL = "http://127.0.0.1:3001"
 local POLL_INTERVAL = 0.2
 local PLUGIN_NAME = "RoLink 2.1"
-local PLUGIN_VERSION = "2.11.5"
+local PLUGIN_VERSION = "2.12.0"
 
 local toolbar = plugin:CreateToolbar(PLUGIN_NAME)
 local btn = toolbar:CreateButton("RoLink", "AI bridge (160 tools, poll 200ms)", "rbxassetid://0")
@@ -808,6 +808,87 @@ local function rlEasingList(set: { [string]: boolean }): { string }
   table.sort(out)
   return out
 end
+-- ── Animation pose naming ──────────────────────────────────────────────────
+-- A KeyframeSequence Pose is matched to a joint by PART names, never by the
+-- joint's own name. The Animator docs are explicit: "Pose.Parent.Name is the
+-- 'parent' name, and Pose.Name is the 'child' name... The Animator ignores the
+-- names of the joints themselves."
+--
+-- create_animation_track used to write flat Poses named after JOINTS
+-- ("RightShoulder"), which matches nothing: the clip loaded, played at full
+-- weight for its full duration and delivered zero rotation. Verified in
+-- Studio: the same rig, with the pose chain built here, swept an arm to
+-- -43.5 deg. This resolver is what makes the tree correct.
+
+-- The Motion table is declared HERE, above its first caller. `local function`
+-- only binds at its own statement, so a helper declared after its caller
+-- resolves to a missing GLOBAL at run time (the 2.11.3 bug class). A top-level
+-- `local` also costs a register and the chunk is at the hard cap - which is
+-- why the joint helpers hang off this table instead of being their own locals.
+local Motion = {}
+-- Animatable joint classes. AnimationConstraint replaced Motor6D on R15 rigs
+-- and the Animator drives both the same way, so every joint walk must accept
+-- all three or it silently sees an empty rig.
+Motion.JOINT_CLASSES = { Motor6D = true, AnimationConstraint = true, Bone = true }
+function Motion.IsJoint(inst: Instance): boolean
+  return Motion.JOINT_CLASSES[inst.ClassName] == true
+end
+function Motion.JointsOf(rig: Instance): { Instance }
+  local out: { Instance } = {}
+  for _, d in ipairs(rig:GetDescendants()) do
+    if Motion.JOINT_CLASSES[d.ClassName] then table.insert(out, d) end
+  end
+  return out
+end
+-- Forward declaration: create_animation_track (just below) needs the rig list
+-- for its TARGET_REQUIRED hint. Body is assigned further down.
+local rigCandidates
+
+-- Resolve a requested pose name to the joint it should drive. Accepts either
+-- the CHILD PART name (canonical, what the engine wants) or the JOINT's own
+-- name ("RightShoulder"), which older prompts use. Part names win: they are
+-- what the engine actually matches.
+Motion.JointFor = function(rig: Instance, wanted: string): Instance?
+  local match: Instance? = nil
+  for _, j in ipairs(Motion.JointsOf(rig)) do
+    local part1 = (j :: any).Part1
+    if part1 and part1.Name == wanted then return j end
+    if not match and j.Name == wanted then match = j end
+  end
+  return match
+end
+
+-- The part that a pose named `wanted` must be called, and the chain of part
+-- names from the rig root down to it. This is the actual contract.
+Motion.PoseChain = function(rig: Instance, wanted: string): ({ string }?, Instance?, string?)
+  local joint = Motion.JointFor(rig, wanted)
+  if not joint then
+    return nil, nil, "no joint on '" .. rig.Name .. "' drives a part or joint named '" .. wanted:sub(1, 64) .. "'"
+  end
+  local j: any = joint
+  local child: BasePart? = j.Part1
+  if not child then
+    return nil, joint, "joint '" .. joint.Name .. "' has no Part1, so it has no pose channel"
+  end
+  -- Walk up Part0 to the rig root, so the Pose tree mirrors the joint tree.
+  local joints = Motion.JointsOf(rig)
+  local function parentOf(part: BasePart): BasePart?
+    for _, other in ipairs(joints) do
+      if (other :: any).Part1 == part then return (other :: any).Part0 end
+    end
+    return nil
+  end
+  local chain: { string } = { child.Name }
+  local cursor: BasePart? = j.Part0
+  local guard = 0
+  while cursor and guard < 64 do
+    guard += 1
+    table.insert(chain, 1, cursor.Name)
+    cursor = parentOf(cursor)
+  end
+  return chain, joint, nil
+end
+
 local function createAnimationTrack(args:{ [string]: any }): { [string]: any }
   local name = tostring(args.name or "RoLinkAnimation"):sub(1, 64)
   local kfData = args.keyframes
@@ -838,6 +919,57 @@ local function createAnimationTrack(args:{ [string]: any }): { [string]: any }
     end
   end
   kfData = bakeEased(kfData)
+  -- A pose is a PART channel, so we need the rig to know each chain.
+  -- Resolve it before creating any Instance: a bad target must leave no
+  -- half-built track behind.
+  local target: Instance? = nil
+  pcall(function()
+    local path = args.characterPath or args.target or args.rigPath
+    if type(path) == "string" and path ~= "" then target = findByPath(path) end
+  end)
+  if not target then
+    local candidates = rigCandidates()
+    if #candidates == 1 then
+      target = findByPath(candidates[1])
+    end
+  end
+  if not target then
+    local candidates = rigCandidates()
+    error("TARGET_REQUIRED: create_animation_track builds Pose channels from the rig's "
+      .. "part names, so it must know the rig. Pass characterPath. Rigs with a Humanoid here: "
+      .. (#candidates > 0 and table.concat(candidates, ", ") or "none - no Model with a Humanoid in workspace"))
+  end
+  -- Precompute each requested pose's part chain once, not per keyframe.
+  local chainCache: { [string]: { string } } = {}
+  do
+    local wanted: { [string]: boolean } = {}
+    for _, kfD in ipairs(kfData) do
+      for _, pD in ipairs((kfD :: any).poses or {}) do
+        if type(pD) == "table" then wanted[tostring((pD :: any).part or "")] = true end
+      end
+    end
+    local missing: { string } = {}
+    for nm in pairs(wanted) do
+      local chain, _, why = Motion.PoseChain(target, nm)
+      if chain then
+        chainCache[nm] = chain
+      else
+        table.insert(missing, nm .. " (" .. tostring(why) .. ")")
+      end
+    end
+    if #missing > 0 then
+      table.sort(missing)
+      local valid: { string } = {}
+      for _, j in ipairs(Motion.JointsOf(target)) do
+        local p1 = (j :: any).Part1
+        table.insert(valid, (p1 and p1.Name or j.Name))
+      end
+      table.sort(valid)
+      error("POSE_NAME_UNMATCHED: these pose names match no joint on '" .. target.Name
+        .. "': " .. table.concat(missing, "; ")
+        .. ". Use a part name: " .. table.concat(valid, ", "))
+    end
+  end
   local folder = game.Workspace:FindFirstChild("RoLinkAnimations")
   if not folder then folder = Instance.new("Folder"); folder.Name = "RoLinkAnimations"; folder.Parent = game.Workspace end
   local seq = Instance.new("KeyframeSequence")
@@ -855,17 +987,44 @@ local function createAnimationTrack(args:{ [string]: any }): { [string]: any }
     local poses = (kfD::any).poses
     if type(poses) ~= "table" or #poses == 0 then error("keyframe poses must be non-empty") end
     if #poses > 64 then error("too many poses per keyframe (max 64)") end
+    -- One nested Pose chain per animated part, sharing ancestor poses when two
+    -- parts live on the same branch. A flat Pose with a joint name matches no
+    -- channel at all: the clip plays and moves nothing.
+    local byPath: { [string]: Instance } = {}
     for _, pD in ipairs(poses) do
-      local pose = Instance.new("Pose")
-      pose.Name = tostring((pD::any).part or "Torso"):sub(1, 64)
+      local wanted = tostring((pD::any).part or "")
+      local chain = chainCache[wanted]
+      if not chain then error("internal: no pose chain for '" .. wanted .. "'") end
       local pos = vec3((pD::any).position)
       local rot = (pD::any).rotation
       local cf = CFrame.new(pos) * CFrame.Angles(math.rad(num(rot and (rot::any).x, 0)), math.rad(num(rot and (rot::any).y, 0)), math.rad(num(rot and (rot::any).z, 0)))
-      pose.CFrame = cf
-      local sc = (pD::any).scale
-      if type(sc) == "table" then pose.Weight = math.clamp(num((sc::any).x, 1), 0.01, 10) end
-      pose.Parent = kf
-      made += 1
+      local parent: Instance = kf
+      local key = ""
+      for depth, partName in ipairs(chain) do
+        key = key .. "/" .. partName
+        local existing = byPath[key]
+        if existing then
+          parent = existing
+        else
+          local pose = Instance.new("Pose")
+          pose.Name = partName:sub(1, 64)
+          local isLeaf = depth == #chain
+          if isLeaf then
+            pose.CFrame = cf
+            local sc = (pD::any).scale
+            if type(sc) == "table" then pose.Weight = math.clamp(num((sc::any).x, 1), 0.01, 10) end
+          else
+            -- Ancestors are pass-through: identity so they cannot rotate
+            -- anything while still carrying the hierarchy.
+            pose.CFrame = CFrame.new()
+          end
+          local okSub = pcall(function() (parent :: any):AddSubPose(pose) end)
+          if not okSub then pose.Parent = parent end
+          byPath[key] = pose
+          made += 1
+          parent = pose
+        end
+      end
       -- Yield regularly: thousands of back-to-back Instance ops starve the
       -- poll task and read as a hang from the bridge side.
       if made % 128 == 0 then task.wait() end
@@ -894,7 +1053,7 @@ local function createAnimationTrack(args:{ [string]: any }): { [string]: any }
     resolvedEasings = rlEasingList(resolvedEasings) }
 end
 -- Rigs the model can actually address: Models with a Humanoid, by full path.
-local function rigCandidates(): {string}
+rigCandidates = function(): {string}
   local out:{string} = {}
   pcall(function()
     for _, d in ipairs(workspace:GetDescendants()) do
@@ -994,9 +1153,11 @@ local function playAnimation(args:{ [string]: any }): { [string]: any }
   ret.playbackVerifiable = false
   ret.note = "Edit mode never renders animation playback, and pressing Play does not "
     .. "carry this track over (Play gets fresh Animator instances), so a silent rig right "
-    .. "after Play proves nothing about the animation. To verify, replay the saved "
-    .. "KeyframeSequence from a runtime Script - template: docs/probes/ProbePlay.server.lua "
-    .. "(or execute_luau with datamodel_type=Edit and inspect the KeyframeSequence Poses)."
+    .. "after Play proves nothing about the animation. To verify, use "
+    .. "docs/probes/ProbePlay.server.lua as a LocalScript in StarterPlayerScripts: "
+    .. "animation assets only load and evaluate on the CLIENT, so a server Script reports "
+    .. "Length=0 and measures nothing. The probe builds a correct pose tree and includes a "
+    .. "control test that drives the joint directly, so a still arm cannot be misread."
   return ret
 end
 local function clipCurvesSummary(clip: Instance): { [string]: any }
@@ -1175,7 +1336,7 @@ end
 local function rlRound2(v: number): number
   return math.floor(v * 100 + 0.5) / 100
 end
-local Motion = {
+Motion = {
   rootName = "RoLinkMotionAnimations",
   effects = { tween = true, shake = true, fov = true, pulse = true },
   effectRoot = "RoLinkMotionEffects",
@@ -1496,8 +1657,15 @@ function Motion.motionFindRigPart(target: Instance, wanted:string): BasePart
     end
   end
   if count == 0 then
+    local valid: { string } = {}
+    for _, d in ipairs(target:GetDescendants()) do
+      if d:IsA("BasePart") then table.insert(valid, d.Name) end
+    end
+    table.sort(valid)
     error("MOTION_TRACK_NOT_FOUND: target '" .. target:GetFullName() .. "' has no BasePart named '"
-      .. wanted:sub(1, 64) .. "' - run analyze_animatable_model and use an exact part name")
+      .. wanted:sub(1, 64) .. "'. Pose channels are PART names - the Animator matches "
+      .. "Pose.Name to the joint's Part1 name and ignores joint names. Parts on this rig: "
+      .. (#valid > 0 and table.concat(valid, ", ") or "none"))
   end
   if count > 1 then
     error("MOTION_TRACK_AMBIGUOUS: target '" .. target:GetFullName() .. "' has duplicate BasePart name '"
@@ -1531,8 +1699,8 @@ function Motion.motionRigInfo(target: Instance, trackNames:{ [string]: boolean }
     local current = queue[qi]
     qi += 1
     for _, d in ipairs(target:GetDescendants()) do
-      if d:IsA("Motor6D") then
-        local p0, p1 = d.Part0, d.Part1
+      if Motion.IsJoint(d) then
+        local p0, p1 = (d :: any).Part0, (d :: any).Part1
         if p0 == current and p1 and not seenParts[p1] then
           parent[p1] = current
           seenParts[p1] = true
@@ -1548,14 +1716,21 @@ function Motion.motionRigInfo(target: Instance, trackNames:{ [string]: boolean }
   for name in pairs(trackNames) do
     local part = parts[name]
     if not part then
+      local valid: { string } = {}
+      for _, d in ipairs(target:GetDescendants()) do
+        if d:IsA("BasePart") then table.insert(valid, d.Name) end
+      end
+      table.sort(valid)
       error("MOTION_TRACK_NOT_FOUND: no BasePart named '" .. name:sub(1, 64)
-        .. "' under '" .. target:GetFullName() .. "'")
+        .. "' under '" .. target:GetFullName() .. "'. Pose channels are PART names, not "
+        .. "joint names. Parts on this rig: "
+        .. (#valid > 0 and table.concat(valid, ", ") or "none"))
     end
     local seen = part
     while seen and seen ~= root do
       if parent[seen] == nil then
         error("MOTION_TRACK_DISCONNECTED: '" .. name:sub(1, 64)
-          .. "' is not connected to the rig root by a Motor6D")
+          .. "' is not connected to the rig root by any animatable joint")
       end
       seen = parent[seen]
     end
@@ -3125,7 +3300,10 @@ local function rlAnimWrite(name: string, folder: Instance, tracks: any, markers:
   pcall(function() ChangeHistoryService:SetWaypoint("RoLink model-anim " .. name:sub(1, 48)) end)
 end
 local function rlJointKind(inst: Instance): string
-  if inst:IsA("Motor6D") or inst:IsA("Bone") then return "rotational" end
+  -- AnimationConstraint is the R15 replacement for Motor6D and the Animator
+  -- drives both through Transform, so it is rotational too. Leaving it out
+  -- made every joint on such a rig read as "static".
+  if inst:IsA("Motor6D") or inst:IsA("Bone") or inst:IsA("AnimationConstraint") then return "rotational" end
   if inst:IsA("Weld") or inst:IsA("WeldConstraint") then return "follow" end
   if inst:IsA("Attachment") then return "anchor" end
   if inst:IsA("Model") then
@@ -4246,7 +4424,7 @@ local function rlAnimResolveJoint(target: Instance, track: string): Instance?
   local best: Instance? = nil
   pcall(function()
     for _, d in ipairs(target:GetDescendants()) do
-      if d.Name == track and (d:IsA("Motor6D") or d:IsA("Bone") or d:IsA("BasePart")) then
+      if d.Name == track and (Motion.IsJoint(d) or d:IsA("BasePart")) then
         best = d
         break
       end
@@ -4258,8 +4436,8 @@ end
 local function rlAnimApplyPose(inst: Instance, pos: any, rot: any)
   local cf = CFrame.new(num(pos and pos.x, 0), num(pos and pos.y, 0), num(pos and pos.z, 0))
     * CFrame.Angles(math.rad(num(rot and rot.x, 0)), math.rad(num(rot and rot.y, 0)), math.rad(num(rot and rot.z, 0)))
-  if inst:IsA("Motor6D") then
-    (inst :: Motor6D).Transform = cf
+  if Motion.IsJoint(inst) then
+    (inst :: any).Transform = cf
   elseif inst:IsA("BasePart") then
     (inst :: BasePart).CFrame = cf
   else
@@ -4271,7 +4449,7 @@ local function rlAnimSnapshot(target: Instance, names: { string })
   for _, tn in ipairs(names) do
     local j = rlAnimResolveJoint(target, tn)
     if j then
-      if j:IsA("Motor6D") then held[tn] = { inst = j, cf = (j :: Motor6D).Transform }
+      if Motion.IsJoint(j) then held[tn] = { inst = j, cf = (j :: any).Transform }
       elseif j:IsA("BasePart") then held[tn] = { inst = j, cf = (j :: BasePart).CFrame } end
     end
   end
@@ -4281,8 +4459,8 @@ local function rlAnimRestore()
   for _, h in pairs(rlAnimUI.held or {}) do
     pcall(function()
       if (h :: any).inst and (h :: any).cf then
-        if ((h :: any).inst :: Instance):IsA("Motor6D") then
-          (((h :: any).inst) :: Motor6D).Transform = (h :: any).cf
+        if Motion.IsJoint((h :: any).inst :: Instance) then
+          (((h :: any).inst) :: any).Transform = (h :: any).cf
         elseif ((h :: any).inst :: Instance):IsA("BasePart") then
           (((h :: any).inst) :: BasePart).CFrame = (h :: any).cf
         end
@@ -6844,4 +7022,4 @@ task.spawn(function() while true do task.wait(20); if enabled then pcall(functio
   if #workspace:GetDescendants()>600 then metrics.avgFPS=35 end
   HttpService:RequestAsync({Url=MCP_URL.."/metrics", Method="POST", Headers={["Content-Type"]="application/json"}, Body=HttpService:JSONEncode(metrics)})
 end) end end end)
-log("RoLink 2.11.5 loaded [repo copy] - 160 tools ready, polling "..MCP_URL)
+log("RoLink 2.12.0 loaded [repo copy] - 160 tools ready, polling "..MCP_URL)

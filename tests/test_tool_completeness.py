@@ -89,7 +89,7 @@ class CompletenessTest(unittest.TestCase):
 
     def test_plugin_character_help(self):
         # CHARACTER errors must name real rigs; render honesty needs IsRunning.
-        for snippet in ("local function rigCandidates", "FindFirstChildOfClass(\"Humanoid\")",
+        for snippet in ("local rigCandidates", "FindFirstChildOfClass(\"Humanoid\")",
                         "Rigs with a Humanoid here", "IsRunning()",
                         "Edit mode never renders animation playback"):
             self.assertIn(snippet, self.plugin, f"missing: {snippet}")
