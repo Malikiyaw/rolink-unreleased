@@ -52,8 +52,9 @@ run "extension parser tests" node rolink-extension/test-parser.js
 run "extension agent tests" node rolink-extension/test-agent.js
 run "js syntax" bash scripts/check_syntax.sh
 
-# 5. Luau plugin guard.
+# 5. Luau plugin guards: block balance/line cap, then real syntax.
 run "luau blocks" python3 scripts/check_luau_blocks.py
+run "luau syntax" python3 scripts/check_luau_syntax.py
 
 # 6. Tool audit — 0 failing required.
 run "tool audit" python3 scripts/audit_tools.py

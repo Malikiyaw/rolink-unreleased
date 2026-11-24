@@ -602,13 +602,87 @@ class PluginExecutionTest(unittest.TestCase):
             for i, ln in enumerate(f.read().splitlines(), 1):
                 self.assertLessEqual(len(ln), 900, "line %d is %d chars" % (i, len(ln)))
 
+    def _luau_blocks_mod(self):
+        import importlib.util
+        spec = importlib.util.spec_from_file_location(
+            "check_luau_blocks", os.path.join(ROOT, "scripts", "check_luau_blocks.py"))
+        mod = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(mod)
+        return mod
+
+    def _luau_syntax_mod(self):
+        import importlib.util
+        spec = importlib.util.spec_from_file_location(
+            "check_luau_syntax", os.path.join(ROOT, "scripts", "check_luau_syntax.py"))
+        mod = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(mod)
+        return mod
+
+    def test_luau_syntax_guard_passes_shipped_plugin(self):
+        # 2.11.0 shipped a plugin Studio could not compile while
+        # check_luau_blocks.py said "OK" - it only balances keywords, so it is
+        # blind to type annotations and braces. Three fatal errors were in the
+        # file (660 `(number -> number)`, 1541 an annotated field assign, 6581
+        # an unclosed table). This asserts the shipped file is clean.
+        mod = self._luau_syntax_mod()
+        with open(os.path.join(ROOT, "studio-plugin", "RoLink.lua"),
+                  encoding="utf-8") as f:
+            src = f.read()
+        issues = mod.check_source(src, "RoLink.lua")
+        self.assertEqual(issues, [], "luau syntax: " + "; ".join(issues[:10]))
+
+    def test_luau_syntax_guard_catches_shipped_2110_errors(self):
+        # Regression fixture: the exact text that shipped broken. If the guard
+        # ever stops flagging these, the 2.11.0 break can ship again.
+        mod = self._luau_syntax_mod()
+
+        # (a) the reported bug - Studio: "Expected ')' (to close '(' at
+        # column 78), got '-'"
+        paren_type = (
+            "local function makeBezier(x1: number, y1: number, x2: number, "
+            "y2: number): (number -> number)\n"
+            "  return function(u: number): number return u end\n"
+            "end\n")
+        issues = mod.check_source(paren_type)
+        self.assertTrue(issues, "parenthesised function type was not flagged")
+        self.assertIn("->", " ".join(issues))
+
+        # (b) a type annotation on a field assignment
+        field_assign = ("local Motion = {}\n"
+                        "Motion.MOTION_EASING_ENUMS: { [string]: boolean } = {\n"
+                        "  linear = true,\n}\n")
+        self.assertTrue(mod.check_source(field_assign),
+                        "annotated field assignment was not flagged")
+
+        # (c) an unclosed table that swallows the following elseif chain
+        open_brace = ('local result\nif true then\n  result = {note = ("a")\n'
+                      '  elseif false then result = 1\nend\n')
+        issues = mod.check_source(open_brace)
+        self.assertTrue(issues, "unclosed `{` was not flagged")
+        self.assertIn("never closed", " ".join(issues))
+
+    def test_luau_syntax_guard_ignores_lookalikes(self):
+        # Method-call colons (`btn.Click:Connect(`) are everywhere in the
+        # plugin, and `->` appears in comments, strings and data. None of those
+        # may be reported - a guard that cries wolf gets disabled.
+        mod = self._luau_syntax_mod()
+        benign = (
+            "-- comment mentioning (number -> number)\n"
+            'local s = "(number -> number) in a string"\n'
+            "local t = [[ ({ } ]]\n"
+            "local ok: (number) -> number = function(u: number): number return u end\n"
+            "local tbl = { a = 1, b = { c = 2 } }\n"
+            "btn.Click:Connect(function() print(tbl, s, t) end)\n"
+            "return ok\n")
+        self.assertEqual(mod.check_source(benign), [])
+
     def test_plugin_build_tag_present(self):
         # The Output banner must identify a repo-fresh copy ("[repo copy]")
         # so a stale install is distinguishable from the release zip at a
-        # glance. The documented `RoLink 2.11.0 loaded` prefix must survive.
+        # glance. The documented `RoLink 2.11.1 loaded` prefix must survive.
         with open(os.path.join(ROOT, "studio-plugin", "RoLink.lua"), encoding="utf-8") as f:
             src = f.read()
-        self.assertIn("RoLink 2.11.0 loaded [repo copy]", src)
+        self.assertIn("RoLink 2.11.1 loaded [repo copy]", src)
 
     def test_installed_plugin_state(self):
         import tempfile
@@ -658,8 +732,8 @@ class PluginExecutionTest(unittest.TestCase):
             bat = f.read()
         for pin in ("QUIT ROBLOX STUDIO FIRST", "exit /b 2", "INSTALL OK",
                     "matches source", "DUPCOUNT", "user_RoLink.lua",
-                    "RoLink 2.11.0 loaded [repo copy]"):
-            self.assertIn(pin, bat, "installer missing: " + pin)
+                   "RoLink 2.11.1 loaded [repo copy]"):
+           self.assertIn(pin, bat, "installer missing: " + pin)
 
     def test_toolbugfix_terrain_and_datastore_real(self):
         with open(os.path.join(ROOT, "studio-plugin", "RoLink.lua"), encoding="utf-8") as f:
