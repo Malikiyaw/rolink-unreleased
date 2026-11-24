@@ -1,31 +1,41 @@
 --!strict
--- ProbePlay.server.lua
--- Paste into a Script named "ProbePlay" inside ServerScriptService, then press Play.
+-- ProbePlay.server.lua  (v2)
+-- Paste into a Script named "ProbePlay" inside ServerScriptService, then press Play (F5).
 --
--- WHY THIS EXISTS
--- play_animation (plugin, Edit mode) reports success but renders nothing, because
--- Studio's Edit DataModel never renders animation playback. Worse, entering Play
--- does NOT carry that track over: Studio clones the place into a fresh Play
--- DataModel whose Animator has no track loaded. So "just press Play" cannot show
--- the arm move no matter whether the plugin is fixed.
+-- WHY v2 EXISTS
+-- v1 did `rig:FindFirstChild("RightShoulder")` - a NON-recursive lookup - and
+-- reported "rig has no child named 'RightShoulder'". That result is
+-- uninformative: joints live inside the rig's part hierarchy (or in a
+-- subfolder), so a direct-child search finds nothing even on a perfectly valid
+-- rig. v1's own error message proved it was only looking at direct children:
+-- it listed Humanoid, Animate, Body Colors and nothing else.
 --
--- This script does the registration and the LoadAnimation INSIDE the Play
--- DataModel, so it tests the one thing still unproven: does a KeyframeSequence
--- whose Pose.Name matches "RightShoulder" actually drive an AnimationConstraint
--- rig? It prints the joint's rotation over time, so the answer is a number,
--- not an impression.
+-- So v2 never assumes where a joint lives. It walks the whole rig, prints what
+-- is actually there (parts, classes, and every joint object), then picks the
+-- joint that the Pose names and samples its rotation.
+--
+-- WHAT IT SETTLES
+-- Whether a KeyframeSequence whose Pose.Name matches a joint actually rotates
+-- that joint. The verdict is a number, not an impression.
 
 local KeyframeSequenceProvider = game:GetService("KeyframeSequenceProvider")
 local Workspace = game:GetService("Workspace")
 
 local RIG_NAME = "Rig_A"
 local SEQ_NAME = "Probe_RightArm"
-local JOINT_NAME = "RightShoulder"
+local JOINT_HINT = "RightShoulder"
+
+local JOINT_CLASSES = { Motor6D = true, AnimationConstraint = true, Bone = true }
 
 local function fail(msg: string)
 	warn("[probe] FAIL: " .. msg)
 end
 
+local function describe(inst: Instance): string
+	return inst.Name .. "(" .. inst.ClassName .. ")"
+end
+
+-- ── 1. the rig ──────────────────────────────────────────────────────────
 local rig = Workspace:WaitForChild(RIG_NAME, 10) :: Model?
 if not rig then
 	fail(RIG_NAME .. " not found in Workspace")
@@ -44,12 +54,61 @@ if not animator then
 	animator.Parent = humanoid
 end
 
+-- ── 2. walk the whole rig: parts + every joint, wherever they live ──────
+-- Parented joints under one part is the common shape; a rig can also keep
+-- them in a folder or under the Model directly. Walk, never guess.
+local allJoints: { any } = {}
+local jointsByName: { [string]: any } = {}
+local partCount = 0
+local skipFolders = { Humanoid = true, Animator = true, HumanoidRootPart = false }
+
+for _, d in ipairs(rig:GetDescendants()) do
+	if d:IsA("BasePart") then
+		partCount += 1
+	elseif JOINT_CLASSES[d.ClassName] then
+		table.insert(allJoints, d)
+		if not jointsByName[d.Name] then
+			jointsByName[d.Name] = d
+		end
+	end
+end
+
+print(string.format("[probe] rig=%s parts=%d joints=%d", rig:GetFullName(), partCount, #allJoints))
+
+if #allJoints == 0 then
+	-- Print the tree so the log itself explains what this rig is made of.
+	local parts: { string } = {}
+	local others: { string } = {}
+	for _, d in ipairs(rig:GetDescendants()) do
+		if d:IsA("BasePart") then
+			table.insert(parts, d.Name)
+		else
+			table.insert(others, describe(d))
+		end
+	end
+	table.sort(parts)
+	fail(RIG_NAME .. " contains NO Motor6D / AnimationConstraint / Bone - nothing for a Pose to drive.")
+	print("[probe] parts: " .. table.concat(parts, ", "))
+	print("[probe] non-part children: " .. table.concat(others, ", "))
+	print("[probe] If those parts are welded rigidly (no joint objects), this rig cannot be "
+		.. "posed by a KeyframeSequence at all - it needs real joints.")
+	return
+end
+
+-- One line per joint, so the mapping Pose.Name -> joint is visible.
+local jointNames: { string } = {}
+for name, j in pairs(jointsByName) do
+	table.insert(jointNames, name .. "=" .. j.ClassName)
+end
+table.sort(jointNames)
+print("[probe] joints: " .. table.concat(jointNames, ", "))
+
+-- ── 3. the sequence ─────────────────────────────────────────────────────
 local folder = Workspace:WaitForChild("RoLinkAnimations", 10)
 if not folder then
 	fail("Workspace/RoLinkAnimations missing - was the track built in THIS place?")
 	return
 end
-
 local seq = folder:WaitForChild(SEQ_NAME, 10) :: KeyframeSequence?
 if not seq or not seq:IsA("KeyframeSequence") then
 	fail(SEQ_NAME .. " KeyframeSequence missing (found: " .. tostring(seq and seq.ClassName) .. ")")
@@ -63,24 +122,81 @@ for _, kf in ipairs(kfs) do
 		lastTime = kf.Time
 	end
 end
-print(string.format("[probe] seq=%s keyframes=%d duration=%.2fs loop=%s", seq:GetFullName(), #kfs, lastTime, tostring(seq.Loop)))
+print(string.format("[probe] seq=%s keyframes=%d duration=%.2fs loop=%s",
+	seq:GetFullName(), #kfs, lastTime, tostring(seq.Loop)))
 
--- Does the joint the Pose names actually exist, and what kind is it?
-local joint = rig:FindFirstChild(JOINT_NAME)
-if not joint then
-	fail("rig has no child named '" .. JOINT_NAME .. "'; children are: " .. table.concat((function()
-		local names = {}
-		for _, c in ipairs(rig:GetChildren()) do
-			if not c:IsA("BasePart") then
-				table.insert(names, c.Name .. "(" .. c.ClassName .. ")")
-			end
+-- Which Pose names does the sequence actually animate? A Pose whose Name
+-- matches no joint is silently ignored by the engine - that is the failure
+-- mode worth surfacing, so compare rather than assume.
+local poseNames: { [string]: boolean } = {}
+for _, kf in ipairs(kfs) do
+	for _, d in ipairs(kf:GetDescendants()) do
+		if d:IsA("Pose") then
+			poseNames[d.Name] = true
 		end
-		return names
-	end)(), ", "))
+	end
+end
+local unmatched: { string } = {}
+local matched: { string } = {}
+for name in pairs(poseNames) do
+	if jointsByName[name] then
+		table.insert(matched, name)
+	else
+		table.insert(unmatched, name)
+	end
+end
+table.sort(matched)
+table.sort(unmatched)
+print("[probe] Pose names WITH a matching joint: " .. (if #matched > 0 then table.concat(matched, ", ") else "(none)"))
+if #unmatched > 0 then
+	print("[probe] Pose names with NO matching joint: " .. table.concat(unmatched, ", ")
+		.. "  <- these poses do nothing")
+end
+
+if #matched == 0 then
+	-- Definitive and actionable: every Pose targets a name with no joint behind
+	-- it, so playback cannot move anything. Stop before sampling - a still rig
+	-- here would be a rig fact, not an animation fact.
+	fail("no Pose name matches any joint on " .. rig.Name .. " - this clip cannot animate this rig.")
+	local valid: { string } = {}
+	for name in pairs(jointsByName) do
+		table.insert(valid, name)
+	end
+	table.sort(valid)
+	print("[probe] Use these joint names as Pose.part instead: " .. table.concat(valid, ", "))
 	return
 end
-print(string.format("[probe] joint %s class = %s", JOINT_NAME, joint.ClassName))
 
+-- ── 4. pick the joint to measure ────────────────────────────────────────
+local joint = jointsByName[JOINT_HINT]
+if not joint then
+	-- Fall back to any pose that DOES have a joint, else the first joint.
+	for _, name in ipairs(matched) do
+		joint = jointsByName[name]
+		break
+	end
+	joint = joint or allJoints[1]
+	print("[probe] '" .. JOINT_HINT .. "' not found - measuring " .. describe(joint) .. " instead")
+end
+print("[probe] measuring joint = " .. describe(joint))
+
+-- Read the joint's rotation in degrees. AnimationConstraint and Motor6D both
+-- expose Transform; Motor6D also has C0. Bone exposes Transform too. Wrap
+-- each read: an unreadable property must not abort the probe.
+local function jointY(): (number?, string)
+	for _, prop in ipairs({ "Transform", "C0" }) do
+		local ok, cf = pcall(function()
+			return (joint :: any)[prop]
+		end)
+		if ok and typeof(cf) == "CFrame" then
+			local _, y, _ = (cf :: CFrame):ToEulerAnglesYXZ()
+			return math.deg(y), prop
+		end
+	end
+	return nil, joint.ClassName .. " exposes no readable CFrame (Transform/C0)"
+end
+
+-- ── 5. play it, inside the Play DataModel ───────────────────────────────
 local hash = KeyframeSequenceProvider:RegisterKeyframeSequence(seq)
 print("[probe] runtime hash = " .. tostring(hash))
 
@@ -98,35 +214,13 @@ loadedTrack.Looped = false
 loadedTrack:Play()
 print("[probe] track playing")
 
--- Read the joint's current rotation, in degrees. AnimationConstraint exposes
--- Transform; Motor6D exposes Transform too; fall back to C0 for older rigs.
-local function jointY(): (number?, string)
-	local kind = joint.ClassName
-	local cf: any = nil
-	local okT, t = pcall(function()
-		return (joint :: any).Transform
-	end)
-	if okT and typeof(t) == "CFrame" then
-		cf = t
-	else
-		local okC, c = pcall(function()
-			return (joint :: any).C0
-		end)
-		if okC and typeof(c) == "CFrame" then
-			cf = c
-		end
-	end
-	if not cf then
-		return nil, kind .. " exposes no readable CFrame (Transform/C0)"
-	end
-	local _, y, _ = (cf :: CFrame):ToEulerAnglesYXZ()
-	return math.deg(y), kind
-end
+local baseline, propUsed = jointY()
+print(string.format("[probe] baseline %s = %s", propUsed, baseline and string.format("%+.1f deg", baseline) or "unreadable"))
 
 local function sample(label: string)
 	local y, why = jointY()
 	if y then
-		print(string.format("[probe] %s  %s Y = %+.1f deg", label, JOINT_NAME, y))
+		print(string.format("[probe] %s  Y = %+.1f deg", label, y))
 	else
 		print(string.format("[probe] %s  unreadable: %s", label, why))
 	end
@@ -140,4 +234,7 @@ sample("t=0.50")
 task.wait(0.50)
 sample("t=1.00")
 task.wait(0.50)
-print("[probe] done. VERDICT: if Y moved away from 0 and came back, the " .. joint.ClassName .. " rig animates and the duel will work. If Y stayed 0 the whole time, Pose.Name does not drive " .. joint.ClassName .. " and the rig needs Motor6Ds (or a different playback path).")
+sample("t=1.50")
+
+print("[probe] VERDICT: if Y moved away from the baseline and came back, this joint class animates.")
+print("[probe] If Y never moved, the Pose name matched but did not drive the joint - see the matched/unmatched lines above.")

@@ -148,11 +148,22 @@ def check(path, max_line=MAX_LINE_DEFAULT, max_chunk_locals=MAX_CHUNK_LOCALS_DEF
             continue
         if word in ("if", "for", "while"):
             if word == "if":
-                # Luau if-EXPRESSION (`x = if c then a else b end`,
-                # `return if c then a else b`): its `end` closes the
-                # expression, not a statement block, so it must not push.
-                before = src[src.rfind("\n", 0, col) + 1:col]
-                if re.search(r"(?:=|return|[\w\]\)\"']\s*\()\s*$", before):
+                # Luau if-EXPRESSION: its `end` closes the expression, not a
+                # statement block, so it must not push. It is one whenever the
+                # previous meaningful token cannot END a statement - i.e. it
+                # sits inside an expression. Covered: `= if`, `return if`,
+                # `and/or/not if`, `(if`, `, if`, `{if`, `; if`.
+                #
+                # The previous version only matched `=`/`return`/identifier+`(`,
+                # so `(".." .. foo .. ")`, `, if`, `and if`, `{ if }` and a
+                # parenthesised `(if ...)` all pushed an `if` frame that the
+                # expression's own `end` then closed, and the real `end` was
+                # reported as an unclosed block. Verified against stylua: six
+                # of seven legitimate forms false-failed (2.11.4 could not
+                # have caught the very file it was written for).
+                before = src[src.rfind("\n", 0, col) + 1:col].rstrip()
+                if (re.search(r"(?:=|return|\(|,|\{|\b(?:and|or|not))$", before)
+                        or re.search(r"[\w\]\)\"']\s*\($", before)):
                     prev_word = word
                     ifExpr = True
                     continue

@@ -585,6 +585,73 @@ class PluginExecutionTest(unittest.TestCase):
         self.assertIn("parsed.failed", main)
         self.assertIn("read the failed map", main)
 
+    def test_animation_loop_false_is_honoured(self):
+        # KeyframeSequence.Loop defaults to TRUE. `if args.loop == true then
+        # seq.Loop = true end` therefore left loop:false at the class default,
+        # so a track the user asked to play once reported loop=true (seen live
+        # in the probe output). Every loop site must be three-state: nil keeps
+        # the default, true/false are both applied.
+        import re
+        with open(os.path.join(ROOT, "studio-plugin", "RoLink.lua"), encoding="utf-8") as f:
+            src = f.read()
+        one_sided = re.findall(r"args\.loop == true\s*then\s*(?:\(?\w+\)?\.Loop|track\.Looped|\w+\.Looped)", src)
+        self.assertEqual(one_sided, [],
+                         "loop:false would be ignored at: " + "; ".join(one_sided))
+        for site in ("if args.loop ~= nil then seq.Loop = args.loop == true end",
+                     "if args.loop ~= nil then track.Looped = args.loop == true end"):
+            self.assertIn(site, src, "missing three-state loop handling: " + site)
+
+    def test_luau_blocks_if_expression_not_a_block(self):
+        # Regression: the block guard treated a Luau if-EXPRESSION as a
+        # statement block whenever `if` was not preceded by `=`/`return`, so
+        # `(if a then b else c)`, `, if`, `and if` and `{ if }` each pushed an
+        # `if` frame that the expression's own `end` closed - and the next real
+        # `end` was reported as an unclosed block. Verified against stylua:
+        # six of seven legitimate forms false-failed. That made the guard
+        # unable to parse the very probe file it was meant to protect.
+        mod = self._luau_blocks_mod()
+        legit = [
+            'local t = (if x > 0 then "a" else "b")',
+            "print(f(1, if a then 2 else 3))",
+            "local t = x and if x then 1 else 2",
+            "local t = { if true then 1 else 2 }",
+            "local function g() return if true then 1 else 2 end",
+            'local t = ((if x > 0 then "a" else "b"))',
+        ]
+        for body in legit:
+            src = body + "\nif true then\n  print(1)\nend\n"
+            issues = mod.check_source(src, "fixture.lua") if hasattr(mod, "check_source") else None
+            if issues is None:
+                import tempfile
+                with tempfile.NamedTemporaryFile("w", suffix=".lua", delete=False) as f:
+                    f.write(src)
+                    path = f.name
+                try:
+                    issues = mod.check(path)
+                finally:
+                    os.unlink(path)
+            self.assertEqual(issues, [], "false positive on: " + body + " -> " + "; ".join(issues))
+
+    def test_luau_blocks_still_catches_real_unclosed(self):
+        # The fix above must not weaken detection of genuine bugs.
+        mod = self._luau_blocks_mod()
+        broken = [
+            "if a then\n  print(1)\nelseif b then\n  print(2)\n",
+            "local x = 1\nif x then\n  print(1)\n",
+            "for i=1,10 do\n  print(i)\n",
+            "local f = (if true then 1 else 2)\nif f then\n  print(1)\n",
+        ]
+        import tempfile
+        for src in broken:
+            with tempfile.NamedTemporaryFile("w", suffix=".lua", delete=False) as f:
+                f.write(src)
+                path = f.name
+            try:
+                issues = mod.check(path)
+            finally:
+                os.unlink(path)
+            self.assertNotEqual(issues, [], "missed a real unclosed block: " + src)
+
     def test_luau_blocks_and_line_cap(self):
         # Studio's Luau parser loses block tracking on physical lines past
         # ~1KB and then reports a bogus "Expected 'end' (to close 'else' at
@@ -825,7 +892,7 @@ class PluginExecutionTest(unittest.TestCase):
         # glance. The documented `RoLink 2.11.2 loaded` prefix must survive.
         with open(os.path.join(ROOT, "studio-plugin", "RoLink.lua"), encoding="utf-8") as f:
             src = f.read()
-        self.assertIn("RoLink 2.11.4 loaded [repo copy]", src)
+        self.assertIn("RoLink 2.11.5 loaded [repo copy]", src)
 
     def test_installed_plugin_state(self):
         import tempfile
@@ -875,7 +942,7 @@ class PluginExecutionTest(unittest.TestCase):
             bat = f.read()
         for pin in ("QUIT ROBLOX STUDIO FIRST", "exit /b 2", "INSTALL OK",
                     "matches source", "DUPCOUNT", "user_RoLink.lua",
-                   "RoLink 2.11.4 loaded [repo copy]"):
+                   "RoLink 2.11.5 loaded [repo copy]"):
            self.assertIn(pin, bat, "installer missing: " + pin)
 
     def test_toolbugfix_terrain_and_datastore_real(self):
