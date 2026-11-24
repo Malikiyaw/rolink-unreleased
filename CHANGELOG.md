@@ -121,6 +121,86 @@ instead of a floating package. Also: duplicate `run_sandbox_tests` dict key,
 three placeholder-less f-strings and one unused local in `bridge.py` (pyflakes is
 now clean).
 
+## [2.11.3] - 2026-11-24
+
+### Fix: create_animation_track died with "attempt to call a nil value"
+
+Reported from Studio while building a duel animation:
+
+```
+create_animation_track ERROR calling 'create_animation_track':
+[STUDIO_EXECUTION_FAILED] user_RoLink.lua:Script:877: attempt to call a nil value
+```
+
+Line 877 is `resolvedEasings = rlEasingList(resolvedEasings)`, and `rlEasingList`
+was declared at **line 5050** — 4,173 lines *below* `createAnimationTrack`, which
+calls it. `local function f` only creates the local at its own statement, so
+earlier in the chunk the name resolves to a **global that does not exist**. Every
+`create_animation_track` call therefore failed at the very END of a successful
+build: the KeyframeSequence, the Poses and the manifest were already written, then
+the return statement threw.
+
+Reproduced in a real Lua runtime:
+
+```
+helper declared after the calling closure: ERROR attempt to call a nil value (global 'rlEasingList')
+helper hoisted above its use:              returns the table
+```
+
+This is unrelated to R15, `AnimationConstraint`, or the rig in any way.
+
+A detector that blanks strings and comments (so the plugin's generated
+`runtimeSnippet` text cannot produce false positives) found **four** forward
+references, not one:
+
+| Line | Calls | Declared at | Impact |
+|---|---|---|---|
+| 877 | `rlEasingList` | 5050 | `create_animation_track` broken on every call |
+| 1812 | `rlEasingList` | 5050 | `create_motion_animation` broken on every call |
+| 1406 | `rlRound2` | 3553 | `validate_motion_animation` / `inspect_motion_animation` broke whenever the sequence had a resolvable root |
+| 4041 | `rlAnimRenderTimeline` | 4106 | picking a track in the timeline panel errored |
+
+Fixed by hoisting `rlEasingList` above `createAnimationTrack`, hoisting
+`rlRound2` above the `Motion` table, and forward-declaring
+`rlAnimRenderTimeline` (its body is large, so a `local` forward declaration plus a
+later assignment is the least invasive change). Both hoists are free: the chunk
+sits at exactly 185 locals (hard cap 185), and moving a declaration does not add
+one — the file still passes `check_luau_blocks.py`.
+
+`warn` at line 1225 looked like a fifth case but is not: it sits inside a
+generated script string, where the plugin's own global `warn` is correct.
+
+### Why three guards missed it
+
+`rlEasingList` *is* defined, so block-balance passed, the grammar check passed,
+and `stylua --check` parses the file happily. Scope **order** is not a syntax or
+structure property — it only fails at run time, in the one code path that reaches
+the call. This is the third consecutive blocker of a different class:
+
+| Release | Class | Catchable by |
+|---|---|---|
+| 2.11.0 | syntax (`(number -> number)`, unclosed `{`) | a parser |
+| 2.11.1 | runtime semantics (indexing a function value) | neither — needed execution |
+| 2.11.2 | lexical scope (helper used before declaration) | neither without a scope-order check |
+
+`scripts/check_luau_syntax.py` gained a fifth check for this class: any
+`helper(...)` call that precedes that helper's `local function` declaration is
+reported at `file:line:column`, with a fix hint. It stays silent on a legitimate
+`local helper` forward declaration, on table methods (`M.helper()`), on stdlib
+calls, and on calls embedded in generated strings. Mutual recursion without a
+forward declaration is correctly flagged — that is a real Lua bug, verified by
+running it.
+
+Confirmed in both directions: relocating `rlEasingList` back to its old position
+makes the new check fail at `RoLink.lua:877:23` — the exact line Studio reported —
+while `check_luau_blocks.py` still reports OK.
+
+Three regression tests added (shipped file clean, the 877 shape + broken mutual
+recursion flagged, and five look-alike forms that must stay silent).
+
+Version 2.11.2 → 2.11.3. **Plugin reinstall required.**
+
+
 ## [2.11.2] - 2026-11-24
 
 ### Fix: 2.11.1 shipped a plugin Studio could not load either (different cause)

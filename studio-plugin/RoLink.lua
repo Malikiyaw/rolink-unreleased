@@ -7,7 +7,7 @@ local RunService = game:GetService("RunService")
 local MCP_URL = "http://127.0.0.1:3001"
 local POLL_INTERVAL = 0.2
 local PLUGIN_NAME = "RoLink 2.1"
-local PLUGIN_VERSION = "2.11.2"
+local PLUGIN_VERSION = "2.11.3"
 
 local toolbar = plugin:CreateToolbar(PLUGIN_NAME)
 local btn = toolbar:CreateButton("RoLink", "AI bridge (160 tools, poll 200ms)", "rbxassetid://0")
@@ -795,6 +795,19 @@ local function bakeEased(kfData:{ [string]: any }): { [string]: any }
   if #out > 200 then error("eased bake produced " .. #out .. " keyframes (max 200) - use fewer keyframes or linear easing") end
   return out
 end
+-- Declared HERE, above its first caller: createAnimationTrack (below) and
+-- createMotionAnimation both call this. It used to live ~4200 lines further
+-- down beside the preset library, so at call time the name resolved to a
+-- missing GLOBAL and every create_animation_track call died at the end of a
+-- fully successful build with "attempt to call a nil value" (line 877).
+-- Lua's `local function` only creates the local at its own statement, so a
+-- helper must always be declared above the closure that calls it.
+local function rlEasingList(set: { [string]: boolean }): { string }
+  local out: { string } = {}
+  for k in pairs(set) do table.insert(out, k) end
+  table.sort(out)
+  return out
+end
 local function createAnimationTrack(args:{ [string]: any }): { [string]: any }
   local name = tostring(args.name or "RoLinkAnimation"):sub(1, 64)
   local kfData = args.keyframes
@@ -1142,6 +1155,13 @@ end
 -- Motion helpers live on one table (not chunk locals): Studio caps a chunk
 -- at ~200 locals and this file is at that cliff (see scripts docs). One
 -- `local Motion` replaces ~20 registers; call sites use Motion.x.
+-- Hoisted above Motion: Motion.motionRootMotion (built far below) rounds with
+-- this. Declared late, the name was a missing global -> "attempt to call a nil
+-- value" inside validate_motion_animation / inspect_motion_animation whenever
+-- the sequence had a resolvable root.
+local function rlRound2(v: number): number
+  return math.floor(v * 100 + 0.5) / 100
+end
 local Motion = {
   rootName = "RoLinkMotionAnimations",
   effects = { tween = true, shake = true, fov = true, pulse = true },
@@ -3550,9 +3570,6 @@ local function rlMag3(a: any, b: any): number
   local dz = num(b and (b :: any).z, 0) - num(a and (a :: any).z, 0)
   return math.sqrt(dx * dx + dy * dy + dz * dz)
 end
-local function rlRound2(v: number): number
-  return math.floor(v * 100 + 0.5) / 100
-end
 local function rlTrackNames(tracks: any): { string }
   local out: { string } = {}
   for k in pairs(tracks) do table.insert(out, tostring(k)) end
@@ -4010,6 +4027,10 @@ local function rlAnimRefreshTitle(anim: string, folder: Instance?, trackCount: n
   end)
   t.Text = string.format("%s  •  %.2fs  •  %dfps  •  %d tracks", anim:sub(1, 40), dur, fps, trackCount)
 end
+-- Forward declaration: rlAnimRenderRig (below) calls rlAnimRenderTimeline,
+-- whose body is defined further down. Without this the call resolved to a
+-- missing global and picking a track in the timeline panel errored.
+local rlAnimRenderTimeline
 local function rlAnimRenderRig()
   local list = rlAnimUI.rigList
   if not list then return end
@@ -4103,7 +4124,7 @@ local function rlAnimRenderTracks()
     end)
   end
 end
-local function rlAnimRenderTimeline()
+function rlAnimRenderTimeline()
   local lane = rlAnimUI.keyLane
   local mlane = rlAnimUI.markerLane
   local ruler = rlAnimUI.ruler
@@ -5047,12 +5068,6 @@ end
 -- ── AI-native preset library (2.11.0): text-to-animation scaffolds ────────
 -- Curated, rig-portable presets (R6/R15 share names: Head, Torso, Left Arm,
 -- Right Arm, Left Leg, Right Leg) that the model can instantiate or tweak.
-local function rlEasingList(set: { [string]: boolean }): { string }
-  local out: { string } = {}
-  for k in pairs(set) do table.insert(out, k) end
-  table.sort(out)
-  return out
-end
 local AnimationPresets: { [string]: any } = {
   {
     name = "wave_hi", tags = { "greeting", "gesture", "wave" },
@@ -6816,4 +6831,4 @@ task.spawn(function() while true do task.wait(20); if enabled then pcall(functio
   if #workspace:GetDescendants()>600 then metrics.avgFPS=35 end
   HttpService:RequestAsync({Url=MCP_URL.."/metrics", Method="POST", Headers={["Content-Type"]="application/json"}, Body=HttpService:JSONEncode(metrics)})
 end) end end end)
-log("RoLink 2.11.2 loaded [repo copy] - 160 tools ready, polling "..MCP_URL)
+log("RoLink 2.11.3 loaded [repo copy] - 160 tools ready, polling "..MCP_URL)
