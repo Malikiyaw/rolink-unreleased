@@ -121,6 +121,102 @@ instead of a floating package. Also: duplicate `run_sandbox_tests` dict key,
 three placeholder-less f-strings and one unused local in `bridge.py` (pyflakes is
 now clean).
 
+## [2.12.0] - 2026-11-24
+
+### Fix: every animation RoLink built was silently inert
+
+A `KeyframeSequence` `Pose` is matched to a joint by **part** names. Roblox's
+Animator documentation is explicit:
+
+> Animator matches animatable joints to poses stored in an Animation asset based
+> on the names of the parts the joint is connected to. For a Motor6D,
+> `Part0.Name` is the "parent" name, and `Part1.Name` is the "child" name. The
+> poses are matched to joints where `Pose.Parent.Name` is the "parent" name, and
+> `Pose.Name` is the "child" name. **The Animator ignores the names of the
+> joints themselves.**
+
+`create_animation_track` did:
+
+```lua
+pose.Name = tostring((pD::any).part or "Torso")   -- "RightShoulder" = a JOINT name
+pose.Parent = kf                                   -- flat, no hierarchy
+```
+
+Two defects in one line: the wrong name, and no tree. A Pose named
+`"RightShoulder"` matches no channel at all, so the clip **loaded, played at
+full weight for its full duration, and delivered zero rotation.**
+
+This is why four releases of crash fixes never made an animation visible: the
+crashes were masking a silent no-op underneath.
+
+Diagnosed by measurement, not inspection. A probe on the live rig established:
+
+| Observation | Meaning |
+|---|---|
+| `Length=1.000`, `weight=1.00`, weight decays to 0 at the end | clip loaded and played to completion |
+| `jointY` and `armY` stay `+0.0` throughout | nothing was driven |
+| control test: setting `joint.Transform` directly moved the arm 0.383 studs | the rig was always fine |
+
+The control test is what stopped a wrong fix: with no control, "arm did not
+move" reads as a rig problem, and the obvious conclusion was to convert the rig
+to Motor6D. The rig was never the problem.
+
+### What changed
+
+`createAnimationTrack` now:
+
+1. resolves each requested pose name to the joint it drives, accepting either
+   the **child part name** (canonical) or the **joint's own name** (legacy
+   prompts) - part names win, because that is what the engine matches
+2. walks `Part0` up to the rig root, so the Pose tree mirrors the joint tree
+3. emits one nested chain per animated part, sharing ancestor Poses on the same
+   branch, with the CFrame on the leaf and identity on pass-through ancestors
+
+Chains are computed once per call, not per keyframe.
+
+**Contract change:** a pose is a part channel, so the rig is now required.
+`create_animation_track` takes `characterPath` (or infers it when exactly one
+Humanoid rig exists) and errors with `TARGET_REQUIRED` otherwise.
+
+### Also fixed: `AnimationConstraint` rigs were invisible
+
+`AnimationConstraint` replaced `Motor6D` on R15 rigs and the Animator drives
+both the same way, but three paths only knew Motor6D:
+
+- `motionRigInfo` built its parent map from `Motor6D` only, so on an
+  `AnimationConstraint` rig the map came back empty and the pose tree collapsed
+  to a single pose - `create_motion_animation` could not work at all
+- `rlJointKind` returned `"static"` for `AnimationConstraint`, so the timeline
+  editor showed nothing to animate and the snapshot/restore path skipped every
+  joint
+- `MOTION_TRACK_NOT_FOUND` said "run `analyze_animatable_model` and use an exact
+  part name" - that tool maps `AnimationConstraint` to `static`, a guaranteed
+  false negative on exactly the rigs that hit the error. It now lists the rig's
+  real part names and states the rule.
+
+### New: `tests/test_anim_pose_tree.py` + `tests/fixtures/anim_pose_tree.lua`
+
+A mocked 15-joint `AnimationConstraint` rig exercises the resolver in a real
+Lua runtime and asserts the contract: chain length and ordering, leaf equals
+`Part1`, joint-name alias resolution, part-name precedence, and that an unknown
+name fails instead of building a bad pose.
+
+Drift-proven both directions: reverting the leaf logic fails the source guard;
+removing the part-name match from the fixture fails the contract test.
+
+These tests caught two real defects in this very change before it shipped - a
+stale call to a renamed helper (`rlAnimPoseChain`, which would have thrown
+`attempt to call a nil value` at run time - the 2.11.3 class again) and a
+`motionRigInfo` edit that silently did not apply.
+
+### Probe: `docs/probes/ProbePlay.server.lua` (v5)
+
+Rewritten as a **LocalScript for `StarterPlayerScripts`**. Animation assets load
+and evaluate on the CLIENT; a server-side `AnimationTrack` reports `Length = 0`
+and never applies poses, so the earlier server probes could not have measured
+anything. v5 waits for the joint to replicate, prints the resolved pose chain,
+includes the control test, builds the correct tree, and samples the arm.
+
 ## [2.11.5] - 2026-11-24
 
 ### Fix: the 2.11.4 probe was wrong, and it hid the answer

@@ -1,10 +1,14 @@
-# RoLink 2.11.5 — AI → Roblox Studio
+# RoLink 2.12.0 — AI → Roblox Studio
 
 **Turn ChatGPT, DeepSeek, Gemini, Kimi, GLM, Qwen, Arena, Arena Agent, Meta AI, Claude, HF Chat, or Dola into a Roblox Studio agent.** Browser extension + local bridge + MCP. Download through GitHub, no build needed.
 
 > 🌐 Free alternative for building Roblox games with AI.
 
 Thirteen providers: **DeepSeek** (recommended), **ChatGPT**, **Gemini**, **Kimi** (`kimi.ai`), **GLM** (`chat.z.ai`), **Qwen** (`chat.qwen.ai`), **Arena** (`arena.ai`, Direct mode), **Arena Agent** (`arena.ai/agent`, supervised, work in progress — not fully working yet), **LMArena Agent** (`lmarena.ai/agent`, supervised, work in progress), **Meta AI**, **Claude** (`claude.ai`, supported), **HF Chat** (`huggingface.co/chat`, fresh support, login required), **Dola** (`dola.com`, work in progress — not usable yet, text-only). Pi (`pi.ai`) is unsupported — its abuse filters escalate to account bans; do not use RoLink there. Images off on ChatGPT free tier (separate quota); Gemini/Kimi may drop tools in long sessions; Arena chat keep **Direct** mode (Battle / Side-by-Side unsupported); Agent Mode runs supervised — it reads settled output, pauses at human prompts, and never votes for you.
+
+## New in 2.12.0
+
+See [CHANGELOG.md](CHANGELOG.md): **every animation RoLink has ever built was silently inert.** A `Pose` is matched to a joint by **part** names — `Pose.Name` must equal the joint's `Part1.Name`, nested under a `Pose` named `Part0.Name`. Roblox's Animator **ignores joint names entirely**. `create_animation_track` wrote flat `Pose`s named after joints (`"RightShoulder"`), so clips loaded, played at full weight for their full duration, and delivered zero rotation — which looks exactly like a broken rig. It now resolves the joint, walks `Part0` up to the root, and emits the nested tree the engine expects; joint names keep working as aliases. Verified in Studio: the same rig swept an arm from 0 to **-43.5°** once the tree was correct. Also fixed: `create_motion_animation` built an empty parent map (Motor6D-only walk) on `AnimationConstraint` rigs, the timeline editor treated every `AnimationConstraint` as `static`, and `MOTION_TRACK_NOT_FOUND` pointed at a tool that reports those rigs as un-animatable. **Plugin reinstall required.** `create_animation_track` now needs `characterPath` (or a single Humanoid rig in the workspace) because a pose is a part channel and it must know the rig.
 
 ## New in 2.11.5
 
@@ -97,7 +101,7 @@ through our own plugin:
   `game:GetService("HttpService").HttpEnabled = true` (once per place — lets the plugin reach the bridge).
 - **Quit Studio completely first** — it caches plugins at startup, so installing while open changes nothing until a full restart. A **RoLink** toolbar button appears; the bridge prints `plugin polling` when it connects. Without this step, registry tools report a clear `plugin_offline` error instead of running.
 - After every RoLink update, reinstall the plugin the same way (quit Studio → run installer → reopen).
-- **Plugin not showing up, or red `user_RoLink.lua` errors in Output?** Two causes: (1) a stale copy — quit Studio fully (check Task Manager for `RobloxStudioBeta.exe`), delete every `*RoLink*.lua` in `%LOCALAPPDATA%\Roblox\Plugins`, run `install-plugin.bat` again (it refuses while Studio runs, purges duplicates, and byte-verifies with `INSTALL OK`); (2) a compile error in the file itself. Two guards cover this now, because the first one alone did not: `scripts/check_luau_blocks.py` balances blocks and caps physical lines at 900 chars (Studio's parser loses block tracking past ~1KB and misreports the error on a later branch), but it is blind to type annotations and braces — which is how 2.11.0 shipped a plugin that could not load. `scripts/check_luau_syntax.py` now checks those shapes and reports `file:line:column` the way Studio does. So if Studio still shows something like `Expected ')' (to close '(' at column 78), got '->'`, the installed copy is older than this release; relaunching will not help, only a reinstall will. Proof it worked: Output shows `RoLink 2.11.5 loaded [repo copy]` — no tag, no toolbar means the old file is still installed. Each Team Create collaborator installs locally; plugin errors are per-machine.
+- **Plugin not showing up, or red `user_RoLink.lua` errors in Output?** Two causes: (1) a stale copy — quit Studio fully (check Task Manager for `RobloxStudioBeta.exe`), delete every `*RoLink*.lua` in `%LOCALAPPDATA%\Roblox\Plugins`, run `install-plugin.bat` again (it refuses while Studio runs, purges duplicates, and byte-verifies with `INSTALL OK`); (2) a compile error in the file itself. Two guards cover this now, because the first one alone did not: `scripts/check_luau_blocks.py` balances blocks and caps physical lines at 900 chars (Studio's parser loses block tracking past ~1KB and misreports the error on a later branch), but it is blind to type annotations and braces — which is how 2.11.0 shipped a plugin that could not load. `scripts/check_luau_syntax.py` now checks those shapes and reports `file:line:column` the way Studio does. So if Studio still shows something like `Expected ')' (to close '(' at column 78), got '->'`, the installed copy is older than this release; relaunching will not help, only a reinstall will. Proof it worked: Output shows `RoLink 2.12.0 loaded [repo copy]` — no tag, no toolbar means the old file is still installed. Each Team Create collaborator installs locally; plugin errors are per-machine.
 
 ### 3. Run the Bridge
 
@@ -114,10 +118,10 @@ Open a new chat on https://chat.deepseek.com (recommended), https://chatgpt.com,
 
 | Where | What to look for |
 | --- | --- |
-| Bridge terminal banner | `BRIDGE START v2.11.5` (proves which folder you launched) |
+| Bridge terminal banner | `BRIDGE START v2.12.0` (proves which folder you launched) |
 | Bridge `plugin vX` line | Must equal the bridge version — a mismatch means Studio loaded a stale plugin; redo step 2b with Studio fully quit |
-| Extension bar/popup | `v2.11.5` next to the RoLink name |
-| Studio Output on launch | `RoLink 2.11.5 loaded` |
+| Extension bar/popup | `v2.12.0` next to the RoLink name |
+| Studio Output on launch | `RoLink 2.12.0 loaded` |
 
 If any one differs, that component came from a different install — reinstall it from this release.
 
