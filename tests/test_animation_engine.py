@@ -53,7 +53,18 @@ class AnimationEngineTest(unittest.TestCase):
         cls.registry = _load_catalog()
 
     def test_new_helpers_defined_once(self):
+        # rlSeamScore is a TABLE (`local rlSeamScore = { score=..., threshold=...,
+        # tip=... }`), not a `local function`: 2.11.1 shipped it as a function with
+        # fields bolted on, which raised "attempt to index function" at chunk scope
+        # and stopped the plugin from loading at all.
+        table_helpers = {"rlSeamScore"}
         for f in ENGINE_FNS:
+            if f in table_helpers:
+                self.assertEqual(len(re.findall(r"local " + f + r" = \{", self.plugin)), 1,
+                                 f + " must be defined exactly once (as a table)")
+                self.assertEqual(len(re.findall(r"local function " + f + r"\b", self.plugin)), 0,
+                                 f + " must NOT be a local function (fields cannot be indexed on one)")
+                continue
             self.assertEqual(len(re.findall(r"local function " + f + r"\b", self.plugin)), 1,
                              f + " must be defined exactly once")
 
@@ -207,7 +218,15 @@ class AnimationEngineTest(unittest.TestCase):
     def test_rlModelValidate_returns_seamThreshold(self):
         seg = self.plugin[self.plugin.find("local function rlModelValidate"):
                           self.plugin.find("local function rlModelValidate") + 6000]
-        self.assertIn("seamThreshold = rlSeamScore.bridgeThreshold", seg)
+        # Was `rlSeamScore.bridgeThreshold`, which pinned the very expression
+        # that crashed the plugin: rlSeamScore was a function value.
+        self.assertIn("seamThreshold = rlSeamScore.threshold", seg)
+        # No CODE may index the function (the fix comment legitimately names the
+        # old expression, so only uncommented lines count).
+        code_only = [ln for ln in self.plugin.split("\n")
+                     if not ln.lstrip().startswith("--")]
+        self.assertFalse(any("rlSeamScore.bridgeThreshold" in ln for ln in code_only),
+                         "indexing the rlSeamScore function crashes the plugin")
 
     def test_budgets_unchanged(self):
         # keep the reliable ceilings; contact sheet is schematic, not pixels
