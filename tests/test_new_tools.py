@@ -120,7 +120,7 @@ class NewToolChainTest(unittest.TestCase):
         for key in ("studio", "place", "playState", "selected", "plugin",
                     "bridge", "pendingTasks", "project"):
             self.assertIn(key, body, f"missing {key}")
-        self.assertEqual(body["bridge"], "2.11.2")
+        self.assertEqual(body["bridge"], "2.11.3")
         self.assertIsInstance(body["selected"], list)
         self.assertIsInstance(body["pendingTasks"], int)
 

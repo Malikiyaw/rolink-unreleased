@@ -741,13 +741,91 @@ class PluginExecutionTest(unittest.TestCase):
         self.assertNotIn("local function rlSeamScore", src)
         self.assertIn("rlSeamScore.score(", src)
 
+    def test_luau_no_forward_referenced_helpers(self):
+        # 2.11.2: create_animation_track called rlEasingList (line 877) while the
+        # helper was declared 4173 lines LOWER, so the name was a missing global
+        # and every call died with "attempt to call a nil value" at the very end
+        # of a successful build. No parser can see scope order - hence this.
+        mod = self._luau_syntax_mod()
+        with open(os.path.join(ROOT, "studio-plugin", "RoLink.lua"),
+                  encoding="utf-8") as f:
+            shipped = f.read()
+        issues = mod._forward_reference_issues(
+            mod._blank_noise(shipped), shipped, "RoLink.lua")
+        self.assertEqual(issues, [],
+                         "forward-referenced helpers: " + "; ".join(issues[:5]))
+
+    def test_luau_forward_reference_gate_catches_the_shipped_bug(self):
+        mod = self._luau_syntax_mod()
+        # the exact 2.11.2 shape, narrowed to its essentials
+        bug = ("local function createAnimationTrack(a)\n"
+               "  return rlEasingList(a)\n"
+               "end\n"
+               "local function rlEasingList(s)\n"
+               "  return s\n"
+               "end\n"
+               "return createAnimationTrack\n")
+        issues = mod.check_source(bug)
+        self.assertTrue(issues, "forward reference not flagged")
+        self.assertIn("rlEasingList", " ".join(issues))
+
+        # mutual recursion without `local odd` is ALSO a real runtime bug
+        mutual_bad = ("local function even(n)\n"
+                      "  if n == 0 then return true end\n"
+                      "  return odd(n - 1)\n"
+                      "end\n"
+                      "local function odd(n)\n"
+                      "  if n == 0 then return false end\n"
+                      "  return even(n - 1)\n"
+                      "end\n"
+                      "return even\n")
+        self.assertTrue(mod.check_source(mutual_bad),
+                        "mutual recursion without a forward decl is broken Lua")
+
+        # ...and the corrected form, with `local odd`, must pass
+        mutual_ok = ("local odd\n"
+                     "local function even(n)\n"
+                     "  if n == 0 then return true end\n"
+                     "  return odd(n - 1)\n"
+                     "end\n"
+                     "function odd(n)\n"
+                     "  if n == 0 then return false end\n"
+                     "  return even(n - 1)\n"
+                     "end\n"
+                     "return even\n")
+        self.assertEqual(mod.check_source(mutual_ok), [])
+
+    def test_luau_forward_reference_ignores_lookalikes(self):
+        # must stay silent on: forward declarations, table methods, and calls
+        # embedded in generated script STRINGS (the plugin is full of those).
+        mod = self._luau_syntax_mod()
+        cases = {
+            "forward declaration": (
+                "local helper\n"
+                "local function caller() return helper() end\n"
+                "function helper() return 1 end\n"
+                "return caller\n"),
+            "table method call": (
+                "local M = {}\n"
+                "local function use() return string.format('%d', 1), M.h() end\n"
+                "function M.h() return 2 end\n"
+                "return use\n"),
+            "call inside a generated string": (
+                "local src = \"local x = lateHelper() print(x)\"\n"
+                "local function first() return src end\n"
+                "local function lateHelper() return 3 end\n"
+                "return first\n"),
+        }
+        for label, text in cases.items():
+            self.assertEqual(mod.check_source(text), [], label)
+
     def test_plugin_build_tag_present(self):
         # The Output banner must identify a repo-fresh copy ("[repo copy]")
         # so a stale install is distinguishable from the release zip at a
         # glance. The documented `RoLink 2.11.2 loaded` prefix must survive.
         with open(os.path.join(ROOT, "studio-plugin", "RoLink.lua"), encoding="utf-8") as f:
             src = f.read()
-        self.assertIn("RoLink 2.11.2 loaded [repo copy]", src)
+        self.assertIn("RoLink 2.11.3 loaded [repo copy]", src)
 
     def test_installed_plugin_state(self):
         import tempfile
@@ -797,7 +875,7 @@ class PluginExecutionTest(unittest.TestCase):
             bat = f.read()
         for pin in ("QUIT ROBLOX STUDIO FIRST", "exit /b 2", "INSTALL OK",
                     "matches source", "DUPCOUNT", "user_RoLink.lua",
-                   "RoLink 2.11.2 loaded [repo copy]"):
+                   "RoLink 2.11.3 loaded [repo copy]"):
            self.assertIn(pin, bat, "installer missing: " + pin)
 
     def test_toolbugfix_terrain_and_datastore_real(self):

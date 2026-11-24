@@ -180,6 +180,15 @@ def check_source(src, name="<input>"):
     #    is why it lives here rather than in check_luau_blocks.py.
     issues.extend(_function_index_issues(clean, src, name))
 
+    # 5. Calling a name before its `local function` declaration.
+    #    `local function f` only creates the local AT ITS STATEMENT, so a
+    #    helper declared further down the chunk is a missing GLOBAL where an
+    #    earlier closure calls it -> "attempt to call a nil value" at run
+    #    time, in a tool that otherwise succeeded. Shipped in 2.11.2:
+    #    create_animation_track (line 877) called rlEasingList, declared
+    #    4173 lines later, so every call failed at the very end.
+    issues.extend(_forward_reference_issues(clean, src, name))
+
     return issues
 
 
@@ -254,6 +263,61 @@ def _function_index_issues(clean, src, name):
                 "`local %s = { threshold = 50, tip = function() end }` (call it "
                 "via `%s.score(...)` then)"
                 % (name, idx, m.start() + 1, base, decls[0][0], base, base))
+    return issues
+
+
+# `local function NAME` — the only form that creates the local at its own
+# statement. `local NAME = function` also declares at its statement, so both
+# are candidates for being used before declaration.
+_LOCAL_FN_DECL = re.compile(r"^[ \t]*local[ \t]+function[ \t]+([A-Za-z_]\w*)\s*\(")
+# A forward declaration `local NAME` (no value) makes later calls legal.
+_FORWARD_DECL = re.compile(r"^[ \t]*local[ \t]+([A-Za-z_]\w*)\s*$")
+
+
+def _forward_reference_issues(clean, src, name):
+    """Flag `helper(...)` calls that precede the helper's declaration.
+
+    Runs on the noise-blanked source, so calls inside generated script strings
+    and comments never count (that is what keeps the ~1200-char runtimeSnippet
+    blobs from producing false positives).
+    """
+    lines = clean.split("\n")
+
+    decl = {}
+    for idx, text in enumerate(lines, start=1):
+        m = _LOCAL_FN_DECL.match(text)
+        if m:
+            decl.setdefault(m.group(1), idx)
+    if not decl:
+        return []
+
+    forwarded = set()
+    for text in lines:
+        m = _FORWARD_DECL.match(text)
+        if m:
+            forwarded.add(m.group(1))
+
+    issues = []
+    for base, decl_line in sorted(decl.items(), key=lambda kv: kv[1]):
+        if base in forwarded:
+            continue
+        pat = re.compile(r"\b%s\s*\(" % re.escape(base))
+        for idx, text in enumerate(lines, start=1):
+            if idx >= decl_line:
+                break
+            # The declaration line itself is not a call.
+            if _LOCAL_FN_DECL.match(text):
+                continue
+            m = pat.search(text)
+            if m:
+                issues.append(
+                    "%s:%d:%d: `%s` is called here but declared as a `local "
+                    "function` at line %d - earlier in the chunk the name is a "
+                    "missing GLOBAL, so this raises \"attempt to call a nil "
+                    "value\" at run time. Move the declaration above its first "
+                    "caller, or add `local %s` as a forward declaration."
+                    % (name, idx, m.start() + 1, base, decl_line, base))
+                break
     return issues
 
 
