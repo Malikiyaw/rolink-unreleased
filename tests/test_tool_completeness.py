@@ -93,6 +93,12 @@ class CompletenessTest(unittest.TestCase):
                         "Rigs with a Humanoid here", "IsRunning()",
                         "Edit mode never renders animation playback"):
             self.assertIn(snippet, self.plugin, f"missing: {snippet}")
+        # The note must not promise that pressing Play shows the Edit-session
+        # track - Play gets fresh Animator instances and the track does not
+        # carry over, so "press Play to see it move" is a false promise that
+        # has already cost real debugging time.
+        self.assertNotIn("press Play to see it move", self.plugin)
+        self.assertIn("playbackVerifiable = false", self.plugin)
 
     def test_plugin_version_handshake(self):
         # Poll carries ?pv=PLUGIN_VERSION; bridge tracks + warns on mismatch.
