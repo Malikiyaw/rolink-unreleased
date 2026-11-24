@@ -7,7 +7,7 @@ local RunService = game:GetService("RunService")
 local MCP_URL = "http://127.0.0.1:3001"
 local POLL_INTERVAL = 0.2
 local PLUGIN_NAME = "RoLink 2.1"
-local PLUGIN_VERSION = "2.11.4"
+local PLUGIN_VERSION = "2.11.5"
 
 local toolbar = plugin:CreateToolbar(PLUGIN_NAME)
 local btn = toolbar:CreateButton("RoLink", "AI bridge (160 tools, poll 200ms)", "rbxassetid://0")
@@ -842,7 +842,11 @@ local function createAnimationTrack(args:{ [string]: any }): { [string]: any }
   if not folder then folder = Instance.new("Folder"); folder.Name = "RoLinkAnimations"; folder.Parent = game.Workspace end
   local seq = Instance.new("KeyframeSequence")
   seq.Name = name
-  if args.loop == true then seq.Loop = true end
+  -- Honour an explicit loop:false. `if args.loop == true then ...` left
+  -- KeyframeSequence.Loop at its CLASS DEFAULT (true), so a track built
+  -- with loop:false still reported loop=true. Three-state: nil keeps the
+  -- default, true/false are both applied.
+  if args.loop ~= nil then seq.Loop = args.loop == true end
   local made = 0
   for _, kfD in ipairs(kfData) do
     if type(kfD) ~= "table" then error("keyframe must be an object") end
@@ -978,7 +982,7 @@ local function playAnimation(args:{ [string]: any }): { [string]: any }
   track:Play()
   local speed = num(args.speed, 1)
   if speed ~= 1 then track:AdjustSpeed(math.clamp(speed, 0.1, 8)) end
-  if args.loop == true then track.Looped = true end
+  if args.loop ~= nil then track.Looped = args.loop == true end
   -- Edit mode never renders animation playback: say so honestly instead of a
   -- bare success the user then can't see. The track IS playing underneath.
   -- Do NOT claim Play renders it: entering Play builds a fresh
@@ -1675,7 +1679,7 @@ function Motion.createMotionSequence(args:{ [string]: any }, target: Model): { [
   end
   local seq = Instance.new("KeyframeSequence")
   seq.Name = tostring(args.name or "RoLinkMotion")
-  if args.loop == true then pcall(function() (seq :: any).Loop = true end) end
+  if args.loop ~= nil then pcall(function() (seq :: any).Loop = args.loop == true end) end
   for _, kfD in ipairs(kfData) do
     local kf = Instance.new("Keyframe")
     kf.Time = math.max(0, num((kfD :: any).time, 0))
@@ -6840,4 +6844,4 @@ task.spawn(function() while true do task.wait(20); if enabled then pcall(functio
   if #workspace:GetDescendants()>600 then metrics.avgFPS=35 end
   HttpService:RequestAsync({Url=MCP_URL.."/metrics", Method="POST", Headers={["Content-Type"]="application/json"}, Body=HttpService:JSONEncode(metrics)})
 end) end end end)
-log("RoLink 2.11.4 loaded [repo copy] - 160 tools ready, polling "..MCP_URL)
+log("RoLink 2.11.5 loaded [repo copy] - 160 tools ready, polling "..MCP_URL)

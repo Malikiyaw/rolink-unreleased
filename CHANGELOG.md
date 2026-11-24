@@ -121,6 +121,78 @@ instead of a floating package. Also: duplicate `run_sandbox_tests` dict key,
 three placeholder-less f-strings and one unused local in `bridge.py` (pyflakes is
 now clean).
 
+## [2.11.5] - 2026-11-24
+
+### Fix: the 2.11.4 probe was wrong, and it hid the answer
+
+The probe reported:
+
+```
+[probe] FAIL: rig has no child named 'RightShoulder'; children are:
+Humanoid(Humanoid), Animate(LocalScript), Body Colors(BodyColors)
+```
+
+That reads as "the rig is broken". It was the probe's fault. It called
+`rig:FindFirstChild("RightShoulder")` - a **non-recursive** lookup - while rig
+joints live *under the parts* (`UpperTorso.RightShoulder`). Its own error
+message proved the scope: it listed only direct children, and not a single part.
+
+Probe v2 no longer assumes where a joint lives:
+
+- walks `GetDescendants()` and collects every `Motor6D`, `AnimationConstraint`
+  and `Bone`, wherever it sits (under a part, in a folder, under the Model)
+- prints `rig=... parts=N joints=N` and one line per joint with its class
+- compares every `Pose` name in the sequence against the real joint names, so
+  `Pose names with NO matching joint: X <- these poses do nothing` is a direct
+  finding instead of an inference
+- aborts early with an actionable list when nothing matches, because a still
+  rig in that case is a naming fact, not an animation fact
+- when a rig genuinely has no joints, prints its parts and warns that a rig of
+  rigidly welded parts cannot be posed at all
+
+Validated in a real Lua runtime (lupa) with a mocked Roblox API across six
+paths: AnimationConstraint under a part, Motor6D under a part, joint in a
+subfolder, Pose name matching nothing, rig with no joints, rig missing. The
+three failure paths warn and return; none raise.
+
+### Fix: `loop:false` was silently ignored
+
+`KeyframeSequence.Loop` **defaults to `true`**, and the code only ever assigned
+`true`:
+
+```lua
+if args.loop == true then seq.Loop = true end
+```
+
+So a track built with `loop:false` still came back `loop=true` - visible in the
+probe's own output. Three-state handling now: `nil` keeps the class default,
+`true` and `false` are both applied. Fixed at all three sites
+(`create_animation_track`, `create_motion_animation`, the track in
+`play_animation`).
+
+### Fix: the block guard false-failed on legitimate Luau if-expressions
+
+`scripts/check_luau_blocks.py` only recognised an if-**expression** when `if`
+followed `=`, `return`, or `identifier(`. Every other position - `(if ...)`,
+`, if`, `and if`, `{ if }`, `((if ...))` - pushed an `if` *statement* frame that
+the expression's own `end` then closed, so the following real `end` was reported
+as an unclosed block.
+
+Verified against `stylua` as ground truth: **six of seven** legitimate forms
+false-failed. The guard as shipped in 2.11.4 could not have parsed the very
+probe file it was written to protect - which is exactly what happened.
+
+Now any of `= return ( , { and or not` before `if` marks an expression, plus the
+existing `identifier(` case. Detection of real bugs is unchanged: unclosed
+`if`/`for`, orphan `else`, and an if-expression followed by a genuinely
+unclosed `if` all still fail.
+
+### Guards
+
+- `test_luau_blocks_if_expression_not_a_block` - the six legitimate forms
+- `test_luau_blocks_still_catches_real_unclosed` - the four real bugs
+- `test_animation_loop_false_is_honoured` - no one-sided loop site may return
+
 ## [2.11.4] - 2026-11-24
 
 ### Fix: the plugin's own advice sent a working fix hunting for a second bug
