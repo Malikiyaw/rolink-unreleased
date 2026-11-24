@@ -121,6 +121,78 @@ instead of a floating package. Also: duplicate `run_sandbox_tests` dict key,
 three placeholder-less f-strings and one unused local in `bridge.py` (pyflakes is
 now clean).
 
+## [2.11.2] - 2026-11-24
+
+### Fix: 2.11.1 shipped a plugin Studio could not load either (different cause)
+
+Reported from Studio's Output:
+
+```
+user_RoLink.lua:Script:3572: attempt to index function with 'bridgeThreshold'
+```
+
+`rlSeamScore` was declared as a **`local function`**, and two lines later the
+plugin attached fields to it:
+
+```lua
+local function rlSeamScore(dr: number, dp: number): number ... end
+rlSeamScore.bridgeThreshold = 50     -- line 3572
+rlSeamScore.tip = function(dr, dp) ... end
+```
+
+A bare `local function` is a function **value**; you cannot index it. This ran at
+**chunk scope**, so the chunk aborted where it stood — nothing after line 3572
+registered, no toolbar, no tools. Reproduced in a real Lua runtime:
+
+```
+attempt to index a function value (local 'rlSeamScore')
+```
+
+Fixed by making `rlSeamScore` a **table literal** holding `score`, `threshold`
+and `tip`, with the 7 call sites updated (`rlSeamScore.score(dr, dp)`,
+`rlSeamScore.threshold`, `rlSeamScore.tip(dr, dp)`).
+
+The table shape was not the first thing tried. Two simpler fixes were written
+first and both failed `scripts/check_luau_blocks.py`'s local budget:
+
+| Shape | chunk locals | verdict |
+|---|---|---|
+| two standalone locals (`RL_SEAM_THRESHOLD`, `rlSeamTip`) | 187 | over the 185 cap — rejected |
+| one `local Seam = {…}` table | 186 | still over — rejected |
+| fold the fields into the function's own table literal | **185** | fits, shipped |
+
+That cap exists because Studio refuses a chunk past ~200 registers with an
+unrelated "Out of local registers" error, so this is a real constraint, not
+cosmetic.
+
+### Why no existing gate caught it
+
+It is a **semantic** error, invisible to any parser: `stylua --check` accepts
+`f.x = 1` on a local function (verified, exit 1 = parsed fine). 2.11.1's own
+guard therefore passed it, exactly as the block guard passed the 2.11.0 break.
+The repo has no gate that executes plugin code.
+
+`scripts/check_luau_syntax.py` gained a fourth check: any `name.field` /
+`name[expr]` where `name` is a `local function` is reported at
+`file:line:column`. It is deliberately conservative — a name is only reported
+when the `local function` is at the same indent as the use, is never rebound by
+`local NAME =`, and is not a parameter name anywhere — because this plugin reuses
+`c`, `w` and `props` as loop variables hundreds of times. Verified to stay silent
+on inner-scope shadows, rebound names, category tables (`M.helper`) and stdlib
+calls.
+
+Confirmed working in both directions: reintroducing the 2.11.1 lines makes the
+new check fail at `RoLink.lua:3568` while `stylua --check` still reports a clean
+parse; the shipped file passes.
+
+Also fixed a test that **pinned the bug**: `test_rlModelValidate_returns_seamThreshold`
+asserted the literal string `seamThreshold = rlSeamScore.bridgeThreshold`, so it
+guaranteed the crashing text stayed in the plugin. It now asserts the fixed
+expression and separately forbids the broken one in executable code.
+
+Version 2.11.1 → 2.11.2. **Plugin reinstall required.**
+
+
 ## [2.11.1] - 2026-11-24
 
 ### Fix: 2.11.0 shipped a plugin Studio could not load

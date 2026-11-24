@@ -676,13 +676,78 @@ class PluginExecutionTest(unittest.TestCase):
             "return ok\n")
         self.assertEqual(mod.check_source(benign), [])
 
+    def test_luau_syntax_guard_catches_function_field_index(self):
+        # 2.11.1 (the SECOND unloadable plugin in a row) died at
+        #   rlSeamScore.bridgeThreshold = 50
+        # with "attempt to index function with 'bridgeThreshold'". A bare
+        # `local function` is a function VALUE, so indexing it raises at
+        # RUNTIME, at chunk scope, killing the whole plugin chunk. No parser
+        # sees this (`stylua --check` accepts it), so the gate has to be
+        # semantic.
+        mod = self._luau_syntax_mod()
+        bug = ("local function rlSeamScore(dr, dp)\n"
+               "  return dr + dp\n"
+               "end\n"
+               "rlSeamScore.bridgeThreshold = 50\n"
+               "return rlSeamScore\n")
+        issues = mod.check_source(bug)
+        self.assertTrue(issues, "function-field indexing was not flagged")
+        self.assertIn("local function", " ".join(issues))
+        self.assertIn("rlSeamScore", " ".join(issues))
+
+        # The shipped file must never contain the shape again.
+        with open(os.path.join(ROOT, "studio-plugin", "RoLink.lua"),
+                  encoding="utf-8") as f:
+            shipped = f.read()
+        code_only = "\n".join(ln for ln in shipped.split("\n")
+                              if not ln.lstrip().startswith("--"))
+        self.assertNotIn("rlSeamScore.bridgeThreshold", code_only)
+        self.assertEqual(mod.check_source(shipped, "RoLink.lua"), [])
+
+    def test_luau_syntax_guard_function_index_lookalikes(self):
+        # These are all legitimate and must stay silent, or the gate gets
+        # deleted the first time it blocks a real commit:
+        #   * a loop variable shadowing a same-named function
+        #   * a name rebound with `local x = <table>`
+        #   * a table helper (`M.helper`) and stdlib calls
+        mod = self._luau_syntax_mod()
+        cases = {
+            "inner scope shadow": (
+                "local function build(list)\n"
+                "  local out = {}\n"
+                "  for _, c in ipairs(list) do out[c.Name] = c.ClassName end\n"
+                "  return out\n"
+                "end\n"
+                "return build\n"),
+            "rebound to table": (
+                "local function props(inst) return inst end\n"
+                "local p = props({})\n"
+                "return p\n"),
+            "category table": (
+                "local M = {}\nfunction M.helper(x) return x end\n"
+                "local s = string.format(\"%s\", \"x\")\n"
+                "return M, s\n"),
+        }
+        for label, text in cases.items():
+            self.assertEqual(mod.check_source(text), [], label)
+
+    def test_plugin_cannot_index_a_local_function(self):
+        # Belt-and-braces on the shipped bytes: the exact expression from the
+        # 2.11.1 crash must not exist in executable code.
+        with open(os.path.join(ROOT, "studio-plugin", "RoLink.lua"),
+                  encoding="utf-8") as f:
+            src = f.read()
+        self.assertIn("local rlSeamScore = {", src)
+        self.assertNotIn("local function rlSeamScore", src)
+        self.assertIn("rlSeamScore.score(", src)
+
     def test_plugin_build_tag_present(self):
         # The Output banner must identify a repo-fresh copy ("[repo copy]")
         # so a stale install is distinguishable from the release zip at a
-        # glance. The documented `RoLink 2.11.1 loaded` prefix must survive.
+        # glance. The documented `RoLink 2.11.2 loaded` prefix must survive.
         with open(os.path.join(ROOT, "studio-plugin", "RoLink.lua"), encoding="utf-8") as f:
             src = f.read()
-        self.assertIn("RoLink 2.11.1 loaded [repo copy]", src)
+        self.assertIn("RoLink 2.11.2 loaded [repo copy]", src)
 
     def test_installed_plugin_state(self):
         import tempfile
@@ -732,7 +797,7 @@ class PluginExecutionTest(unittest.TestCase):
             bat = f.read()
         for pin in ("QUIT ROBLOX STUDIO FIRST", "exit /b 2", "INSTALL OK",
                     "matches source", "DUPCOUNT", "user_RoLink.lua",
-                   "RoLink 2.11.1 loaded [repo copy]"):
+                   "RoLink 2.11.2 loaded [repo copy]"):
            self.assertIn(pin, bat, "installer missing: " + pin)
 
     def test_toolbugfix_terrain_and_datastore_real(self):

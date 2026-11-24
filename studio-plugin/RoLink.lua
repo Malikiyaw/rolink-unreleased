@@ -7,7 +7,7 @@ local RunService = game:GetService("RunService")
 local MCP_URL = "http://127.0.0.1:3001"
 local POLL_INTERVAL = 0.2
 local PLUGIN_NAME = "RoLink 2.1"
-local PLUGIN_VERSION = "2.11.1"
+local PLUGIN_VERSION = "2.11.2"
 
 local toolbar = plugin:CreateToolbar(PLUGIN_NAME)
 local btn = toolbar:CreateButton("RoLink", "AI bridge (160 tools, poll 200ms)", "rbxassetid://0")
@@ -3562,21 +3562,29 @@ end
 -- ── Animation truth metrics (2.11.0) ────────────────────────────────────────
 -- Seam score, velocity spikes, and a schematic sparkline so AI can judge
 -- motion quality from read-back alone instead of guessing from numbers.
-local function rlSeamScore(dr: number, dp: number): number
+local rlSeamScore = {
   -- 0-100: 0 = loop endpoints match, 100 = full drift. Rotations count ~2.5x
   -- translates (a pose pop is more visible than a 1-stud wobble) and both are
   -- capped so one pathological track cannot saturate the scale.
-  return math.clamp(math.floor(dr * 0.55 + dp * 2.5), 0, 100)
-end
--- Seam scores below this read as a pop a loop-aware engine should close.
-rlSeamScore.bridgeThreshold = 50
--- Seam tip text rides on rlSeamScore (field, not a chunk-local function).
-rlSeamScore.tip = function(dr: number, dp: number): string
-  if dr > 1 or dp > 0.5 then
-    return "copy the first key pose onto the last key (loop endpoints match)"
-  end
-  return "ok - loop endpoints match"
-end
+  score = function(dr: number, dp: number): number
+    return math.clamp(math.floor(dr * 0.55 + dp * 2.5), 0, 100)
+  end,
+  threshold = 50,
+  tip = function(dr: number, dp: number): string
+    if dr > 1 or dp > 0.5 then
+      return "copy the first key pose onto the last key (loop endpoints match)"
+    end
+    return "ok - loop endpoints match"
+  end,
+}
+-- rlSeamScore is a TABLE, not a `local function` with fields bolted on: a bare
+-- `local function` is a function VALUE, so `rlSeamScore.bridgeThreshold = 50`
+-- raised "attempt to index function with 'bridgeThreshold'" at chunk scope and
+-- aborted the whole plugin chunk before anything registered. Folding the
+-- helpers into one table literal also costs ZERO extra registers: the chunk sits
+-- at the 185-local cap, so two standalone locals (187) or even one separate
+-- `local Seam = {...}` (186) fail the guard. Scores below threshold read as a
+-- pop a loop-aware engine should close; tip says how to close it.
 local function rlValidateSpikes(keys: { [string]: any }, track: string): { [string]: any }
   local spikes: { [string]: any } = {}
   for i = 2, #keys do
@@ -3779,10 +3787,10 @@ local function rlModelValidate(args: { [string]: any }): { [string]: any }
     if doLoop and #keys >= 2 then
       local a, b = keys[1], keys[#keys]
       local dr, dp = rlMag3(a.rot, b.rot), rlMag3(a.pos, b.pos)
-      local seam = { score = rlSeamScore(dr, dp), rotDelta = rlRound2(dr), posDelta = rlRound2(dp), tip = rlSeamScore.tip(dr, dp) }
+      local seam = { score = rlSeamScore.score(dr, dp), rotDelta = rlRound2(dr), posDelta = rlRound2(dp), tip = rlSeamScore.tip(dr, dp) }
       loopSeam[tn] = seam
-      if seam.score < rlSeamScore.bridgeThreshold then
-        err("LOOP_MISMATCH", "track '" .. tn:sub(1, 32) .. "' loop ends do not match the start (seam score " .. seam.score .. " < " .. rlSeamScore.bridgeThreshold .. ")", "fix_animation{planOnly:true} lists the auto-fix: close the loop by writing the first key pose at duration")
+      if seam.score < rlSeamScore.threshold then
+        err("LOOP_MISMATCH", "track '" .. tn:sub(1, 32) .. "' loop ends do not match the start (seam score " .. seam.score .. " < " .. rlSeamScore.threshold .. ")", "fix_animation{planOnly:true} lists the auto-fix: close the loop by writing the first key pose at duration")
       end
     end
   end
@@ -3802,7 +3810,7 @@ local function rlModelValidate(args: { [string]: any }): { [string]: any }
     end
   end
   return { animation = anim, passed = #errors == 0, errors = errors, warnings = warnings,
-    spikes = spikes, loopSeam = loopSeam, sparkline = sparkline, seamThreshold = rlSeamScore.bridgeThreshold }
+    spikes = spikes, loopSeam = loopSeam, sparkline = sparkline, seamThreshold = rlSeamScore.threshold }
 end
 
 -- Schematic "ghost ledger" for new-animation iteration: samples the
@@ -3846,7 +3854,7 @@ local function previewAnimationGhost(args: { [string]: any }): { [string]: any }
     if doLoop and #keys >= 2 then
       local a, b = keys[1], keys[#keys]
       local dr, dp = rlMag3(a.rot, b.rot), rlMag3(a.pos, b.pos)
-      loopSeam[tn] = { score = rlSeamScore(dr, dp), tip = rlSeamScore.tip(dr, dp),
+      loopSeam[tn] = { score = rlSeamScore.score(dr, dp), tip = rlSeamScore.tip(dr, dp),
                        rotDelta = rlRound2(dr), posDelta = rlRound2(dp) }
     end
   end
@@ -4840,13 +4848,13 @@ local function rlModelFix(args: { [string]: any }): { [string]: any }
   for tn, tr in pairs(tracks) do
     local keys = (tr :: any).keys
     local seam = rep0.loopSeam and rep0.loopSeam[tn]
-    if seam and seam.score < rlSeamScore.bridgeThreshold and keys and #keys >= 1 then
+    if seam and seam.score < rlSeamScore.threshold and keys and #keys >= 1 then
       local first = keys[1]
       table.insert(planEntries, {
         index = #planEntries + 1,
         code = "SEAM_BRIDGE", track = tostring(tn), seamScore = seam.score,
         detail = "track '" .. tostring(tn) .. "' loop seam score " .. seam.score
-          .. " < " .. rlSeamScore.bridgeThreshold .. " - write the first key pose onto the duration key to close the loop",
+          .. " < " .. rlSeamScore.threshold .. " - write the first key pose onto the duration key to close the loop",
         fix = { tool = "set_model_keyframe", args = {
           anim = anim, track = tostring(tn), t = duration,
           pose = { position = (first::any).pos or {x=0,y=0,z=0},
@@ -6808,4 +6816,4 @@ task.spawn(function() while true do task.wait(20); if enabled then pcall(functio
   if #workspace:GetDescendants()>600 then metrics.avgFPS=35 end
   HttpService:RequestAsync({Url=MCP_URL.."/metrics", Method="POST", Headers={["Content-Type"]="application/json"}, Body=HttpService:JSONEncode(metrics)})
 end) end end end)
-log("RoLink 2.11.1 loaded [repo copy] - 160 tools ready, polling "..MCP_URL)
+log("RoLink 2.11.2 loaded [repo copy] - 160 tools ready, polling "..MCP_URL)

@@ -171,6 +171,89 @@ def check_source(src, name="<input>"):
             "real cause (a following `elseif` inside a table literal)"
             % (name, _line_of(src, off), _col_of(src, off)))
 
+    # 4. Indexing a `local function` (a SEMANTIC error, not a syntax one).
+    #    `local function f() end` makes f a function VALUE; `f.x = 1` then
+    #    raises "attempt to index function with 'x'" AT RUNTIME. The plugin
+    #    shipped exactly that (``rlSeamScore.bridgeThreshold = 50``) at chunk
+    #    scope, so the chunk aborted and Studio loaded no plugin at all.
+    #    No parser can see this - `stylua --check` accepts it happily - which
+    #    is why it lives here rather than in check_luau_blocks.py.
+    issues.extend(_function_index_issues(clean, src, name))
+
+    return issues
+
+
+# `local function NAME` declares a function VALUE. Luau never lets you index
+# one, so any `NAME.field` / `NAME[...]` is a runtime error the moment it runs.
+_LOCAL_FUNCTION = re.compile(r"^[ \t]*local[ \t]+function[ \t]+([A-Za-z_]\w*)")
+# A later `local NAME = ...` in an enclosing/enclosing-visible scope rebinds the
+# name (usually to a table), which makes the indexing legal. Only compare names
+# at the same indentation depth or shallower, to stay conservative.
+_LOCAL_REBIND = re.compile(r"^([ \t]*)local[ \t]+([A-Za-z_]\w*)[ \t]*=(?!=)")
+
+
+def _function_index_issues(clean, src, name):
+    """Flag `name.field` / `name[...]` where `name` is a `local function`.
+
+    Deliberately conservative, because the plugin reuses short names (`c`,
+    `w`, `props`) as loop variables and inner locals hundreds of times. A name
+    is only reported when it is unambiguous:
+
+      * the `local function` is at the SAME indent as the indexing use (so a
+        deeper inner scope such as a `for _, c in ...` is a different variable),
+      * the name is never rebound by `local NAME =` anywhere in the file
+        (that would usually make it a table),
+      * and it is not a parameter name in that function's own signature.
+    """
+    lines = clean.split("\n")
+
+    declared = {}
+    for idx, text in enumerate(lines, start=1):
+        m = _LOCAL_FUNCTION.match(text)
+        if m:
+            declared.setdefault(m.group(1), []).append(
+                (idx, len(text) - len(text.lstrip(" \t"))))
+    if not declared:
+        return []
+
+    # Every parameter name used by any `local function`. A name that is also a
+    # parameter somewhere is too ambiguous to report (the plugin reuses `c`,
+    # `w`, `props` as both function names and parameter/loop names).
+    parameter_names = set()
+    for text in lines:
+        m = re.match(r"^[ \t]*local[ \t]+function[ \t]+[A-Za-z_]\w*\s*\(([^)]*)\)",
+                     text)
+        if m:
+            for q in m.group(1).split(","):
+                q = q.strip().split(":")[0].strip()
+                if q:
+                    parameter_names.add(q)
+
+    rebound = set()
+    for text in lines:
+        m = _LOCAL_REBIND.match(text)
+        if m:
+            rebound.add(m.group(2))
+
+    issues = []
+    for base, decls in declared.items():
+        if base in rebound or base in parameter_names:
+            continue
+        for idx, text in enumerate(lines, start=1):
+            indent = len(text) - len(text.lstrip(" \t"))
+            # Only the scope the function was declared in.
+            if not any(idx > d and indent == di for d, di in decls):
+                continue
+            m = re.search(r"\b%s\b(?=[.\[])" % re.escape(base), text)
+            if not m:
+                continue
+            issues.append(
+                "%s:%d:%d: `%s` is a `local function` (declared line %d), so "
+                "indexing it raises \"attempt to index function\" at RUNTIME "
+                "and kills the whole chunk. Hold the fields on a table literal: "
+                "`local %s = { threshold = 50, tip = function() end }` (call it "
+                "via `%s.score(...)` then)"
+                % (name, idx, m.start() + 1, base, decls[0][0], base, base))
     return issues
 
 
