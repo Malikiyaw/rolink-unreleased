@@ -4,6 +4,15 @@ import { fileURLToPath } from "node:url";
 import type { z } from "zod";
 import { tools } from "../mcp-server/src/tools/registry.js";
 
+const generatedAt = (): string => {
+  // Reproducible output: a real timestamp here makes "regenerate then
+  // git diff --exit-code" fail on every run, which is worse than useless.
+  // SOURCE_DATE_EPOCH is the reproducible-builds convention; pinning it to the
+  // epoch for artifacts keeps regeneration byte-stable.
+  const epoch = process.env.SOURCE_DATE_EPOCH;
+  return new Date(epoch ? Number(epoch) * 1000 : 0).toISOString();
+};
+
 const ROOT = join(dirname(fileURLToPath(import.meta.url)), "..");
 
 // This generator lives outside mcp-server, so a runtime `import "zod"` would
@@ -80,7 +89,7 @@ export async function generateCodeFields(): Promise<void> {
   const result = {
     version: 2,
     source: "mcp-server/src/tools/registry.ts",
-    generatedAt: new Date().toISOString(),
+    generatedAt: generatedAt(),
     toolCount: tools.length,
     toolFields,
     stringFields: [...stringFields].sort(),

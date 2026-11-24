@@ -4,6 +4,15 @@ import { fileURLToPath } from "node:url";
 import { toolPrompts, HOT_PROMPT_TOOLS } from "../mcp-server/src/tools/toolPrompts.js";
 import { tools } from "../mcp-server/src/tools/registry.js";
 
+const generatedAt = (): string => {
+  // Reproducible output: a real timestamp here makes "regenerate then
+  // git diff --exit-code" fail on every run, which is worse than useless.
+  // SOURCE_DATE_EPOCH is the reproducible-builds convention; pinning it to the
+  // epoch for artifacts keeps regeneration byte-stable.
+  const epoch = process.env.SOURCE_DATE_EPOCH;
+  return new Date(epoch ? Number(epoch) * 1000 : 0).toISOString();
+};
+
 const HERE = dirname(fileURLToPath(import.meta.url));
 const ROOT = join(HERE, "..");
 
@@ -18,7 +27,7 @@ export async function generateToolPrompts(): Promise<void> {
   const payload = {
     version: 1,
     source: "mcp-server/src/tools/toolPrompts.ts",
-    generatedAt: new Date().toISOString(),
+    generatedAt: generatedAt(),
     promptCount: names.length,
     toolCount: tools.length,
     coverage: `${names.length}/${tools.length}`,

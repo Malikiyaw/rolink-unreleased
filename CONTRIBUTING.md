@@ -19,9 +19,14 @@ python -m pip install -r requirements-dev.txt
 cd mcp-server && npm ci && cd ..
 ```
 
-## The six commands to run before every PR
+## The one command to run before every PR
 
-These are exactly what CI runs. If all six are green locally, CI will agree.
+```bash
+bash scripts/check_all.sh
+```
+
+That runs every gate below and exits non-zero at the first failure. The
+individual commands, if you want to run them separately:
 
 ```bash
 # 1. Python tests (375+ tests: bridge, queue, plugin branches, drift guards)
@@ -47,6 +52,19 @@ python scripts/audit_tools.py
 # 6. Generated artifacts + versions
 node scripts/emit-tool-registry.js --check
 python scripts/check_versions.py
+```
+
+## CI
+
+`docs/ci-workflow.yml` is the GitHub Actions equivalent of
+`scripts/check_all.sh`. It is not yet installed as `.github/workflows/ci.yml`
+because the account that committed it lacks the `workflows` permission. To
+enable it:
+
+```bash
+mkdir -p .github/workflows
+cp docs/ci-workflow.yml .github/workflows/ci.yml
+git add .github/workflows/ci.yml && git commit -m "ci: add workflow"
 ```
 
 ## Generated files — do not edit by hand

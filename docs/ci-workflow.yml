@@ -1,3 +1,17 @@
+# HOW TO ENABLE THIS WORKFLOW
+# -------------------------
+# Copy this file to .github/workflows/ci.yml and commit it:
+#
+#     mkdir -p .github/workflows
+#     cp docs/ci-workflow.yml .github/workflows/ci.yml
+#     git add .github/workflows/ci.yml && git commit -m "ci: add workflow"
+#
+# It lives here rather than in .github/ because the automation account that
+# produced this commit has no GitHub App `workflows` permission, and GitHub
+# rejects any push that creates a workflow file with that credential. The
+# content is ready to run as-is; scripts/check_all.sh runs the same gates
+# locally today.
+
 name: CI
 
 # Nothing ran these checks before, so catalog drift, a stale HUD registry and a

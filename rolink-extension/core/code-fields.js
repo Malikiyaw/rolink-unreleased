@@ -10,7 +10,7 @@
 window.ROLINK_CODE_FIELDS = {
   "version": 2,
   "source": "mcp-server/src/tools/registry.ts",
-  "generatedAt": "2026-11-24T10:41:28.253Z",
+  "generatedAt": "1970-01-01T00:00:00.000Z",
   "toolCount": 160,
   "toolFields": {
     "get_instances": [
