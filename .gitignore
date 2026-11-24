@@ -3,7 +3,8 @@ Compressed/
 Deprecated/
 ExtensionPresentation/
 presentation/
-docs/
+# docs/ is NOT ignored: bridge.py cites docs/workflow-contract.md as the
+# routing contract, so it has to be able to exist in the repo.
 
 # Zip files
 *.zip

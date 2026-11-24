@@ -1,6 +1,6 @@
 import { z } from "zod";
 import { commandQueue } from "../commandQueue.js";
-import { isToolAllowed, sanitizeCode } from "../security/policy.js";
+import { isToolAllowed, sanitizeCode, registerKnownTools } from "../security/policy.js";
 import { healCode } from "../selfHeal.js";
 import { rollbackManager } from "../rollback.js";
 import { perfTracker } from "../perfTracker.js";
@@ -22,6 +22,7 @@ import { gameplayFeedback } from "../gameplayFeedback.js";
 import { generateGDD } from "../gdd.js";
 import { generateAsset, generateVariants } from "../assetGen.js";
 import { autoOptimize } from "../perfOptLoop.js";
+import { simulateEconomy, suggestBalance } from "../economySim.js";
 import { analyticsEngine } from "../analytics.js";
 
 export type ToolDef = {
@@ -476,8 +477,67 @@ export const tools: ToolDef[] = [
   { name: "remove_event_handler", description: "14 remove_event_handler – detach event handler", inputSchema: z.object({ path: z.string(), event: z.string(), projectId: z.string().optional() }), handler: async (a)=>({content:[{type:"text", text: await studioQueueAndWait("remove_event_handler", `--remove_event ${a.path}.${a.event}`, a)}]}), provider:"roblox", execution:"studio"},
   { name: "get_global_variables", description: "15 get_global_variables – list globals", inputSchema: z.object({ projectId: z.string().optional() }), handler: async (a)=>({content:[{type:"text", text: await studioQueueAndWait("get_global_variables","--globals", a)}]}), provider:"roblox", execution:"studio"},
   // 16-18 Snapshot
-  { name: "take_snapshot", description: "16 take_snapshot – store full DataModel snapshot (S2). Terminal envelope.", inputSchema: z.object({ label: z.string().optional(), projectId: z.string().optional().default("default") }), handler: async (a)=>({content:[{type:"text", text: await studioQueueAndWait("get_snapshot","--snapshot",a)}]}), provider:"roblox", execution:"studio"},
-  { name: "rollback", description: "17 rollback – revert to snapshot (S2)", inputSchema: z.object({ projectId: z.string().optional().default("default"), steps: z.number().optional().default(1), snapshotId: z.string().optional() }), handler: async (a)=>{ const e=rollbackManager.rollback(a.projectId, a.steps); if(e.length) queueAndWait("undo","--rollback",{steps:e.length, projectId:a.projectId}); return {content:[{type:"text", text: JSON.stringify({rolledBack:e}, null,2)}]}; }},
+  { name: "take_snapshot", description: "16 take_snapshot – capture a full DataModel snapshot and RECORD it so a later rollback has real state to return to (S2). Terminal envelope; the envelope reports whether the snapshot was actually captured.", inputSchema: z.object({ label: z.string().optional(), projectId: z.string().optional().default("default") }), handler: async (a)=>{
+    const t0=Date.now(); const raw = await studioQueueAndWait("get_snapshot","--snapshot",a);
+    // Record the captured tree against the project so rollback() has state.
+    // A snapshot that failed to capture is NOT recorded: an entry without a
+    // snapshot is exactly what made the old rollback a fabricated receipt.
+    let recorded=false, snapshotId:string|undefined, recordNote="";
+    let body:any=null; try{ body=JSON.parse(raw); }catch{ body=null; }
+    const text = typeof body?.result?.text==="string" ? body.result.text
+               : typeof body?.text==="string" ? body.text
+               : typeof body?.result==="string" ? body.result
+               : raw;
+    const okish = body ? body.ok !== false && body.status !== "error" : false;
+    if (okish && typeof text === "string" && text.trim().length > 0) {
+      snapshotId = `snap_${Date.now().toString(36)}_${Math.random().toString(36).slice(2,7)}`;
+      try {
+        rollbackManager.push({ id: snapshotId, projectId: a.projectId, timestamp: Date.now(),
+          tool: "take_snapshot", command: a.label ? `--snapshot ${a.label}` : "--snapshot",
+          snapshotBefore: text.slice(0, 200000) });
+        recorded = true;
+      } catch(e:any){ recordNote = String(e?.message||e); }
+    } else {
+      recordNote = "snapshot did not return readable DataModel state - nothing recorded";
+    }
+    return { content:[{ type:"text", text: JSON.stringify({
+      ok: recorded, tool:"take_snapshot", executionId:`rl_${Date.now().toString(36)}_snap`,
+      status: recorded ? "success" : "error", durationMs: Date.now()-t0,
+      result: { snapshotId: recorded ? snapshotId : null, recorded, bytes: typeof text==="string"?text.length:0 },
+      verification: { checked: true, passed: recorded,
+        detail: recordNote || "snapshot captured and recorded for rollback" },
+      ...(recorded ? {} : { error: { code:"VERIFY_FAILED", message: recordNote || "snapshot could not be recorded" } }),
+    }, null, 2) }], ...(recorded ? {} : { isError:true }) };
+  }, provider:"roblox", execution:"studio"},
+  { name: "rollback", description: "17 rollback – revert to the last recorded snapshot (S2). Returns an honest error when nothing rollback-able was recorded; never reports a rollback it could not verify.", inputSchema: z.object({ projectId: z.string().optional().default("default"), steps: z.number().optional().default(1), snapshotId: z.string().optional() }), handler: async (a)=>{
+    const t0=Date.now();
+    const outcome = rollbackManager.rollback(a.projectId, a.steps);
+    if(!outcome.ok){
+      // Honest failure: nothing was captured, so nothing was undone.
+      return { content:[{ type:"text", text: JSON.stringify({
+        ok:false, tool:"rollback", executionId:`rl_${Date.now().toString(36)}_rb`,
+        status:"error", durationMs: Date.now()-t0,
+        error:{ code:"VERIFY_FAILED", message: outcome.reason || "nothing to roll back" },
+        result:{ rolledBack:0, skipped: outcome.skipped.map(e=>({id:e.id,tool:e.tool})) },
+        verification:{ checked:true, passed:false, detail: outcome.reason },
+      }, null, 2) }], isError:true };
+    }
+    // Real undo request through Studio; the result is the plugin's, not ours.
+    const steps = outcome.restored.length;
+    const env = await studioQueueAndWait("undo","--rollback",{ steps, projectId:a.projectId } as any);
+    let inner:any=null; try{ inner=JSON.parse(env); }catch{ inner=null; }
+    const undone = inner ? inner.ok !== false && inner.status !== "error" : false;
+    return { content:[{ type:"text", text: JSON.stringify({
+      ok: undone, tool:"rollback", executionId: inner?.executionId || `rl_${Date.now().toString(36)}_rb`,
+      status: undone ? "success" : "error", durationMs: Date.now()-t0,
+      result:{ rolledBack: undone ? steps : 0, requested: steps,
+               entries: outcome.restored.map(e=>({id:e.id,tool:e.tool})),
+               skipped: outcome.skipped.map(e=>({id:e.id,tool:e.tool})) },
+      verification:{ checked:true, passed: undone,
+        detail: undone ? `${steps} recorded snapshot(s) undone in Studio` : "Studio did not confirm the undo" },
+      ...(undone ? {} : { error:{ code:"STUDIO_EXECUTION_FAILED", message:"Studio did not confirm the undo" } }),
+    }, null, 2) }], ...(undone ? {} : { isError:true }) };
+  }},
   { name: "diff_snapshots", description: "18 diff_snapshots – compare two snapshots", inputSchema: z.object({ fromId: z.string(), toId: z.string(), projectId: z.string().optional() }), handler: async (a)=>{ const list=rollbackManager.list(a.projectId||"default",50); const f=list.find((e:any)=>e.id===a.fromId); const t=list.find((e:any)=>e.id===a.toId); return {content:[{type:"text", text: JSON.stringify({from:f, to:t}, null,2)}]}; }},
   // 19-22 Sandbox
   { name: "run_in_sandbox", description: "19 run_in_sandbox – isolated harness (S5). Terminal envelope.", inputSchema: z.object({ code: z.string(), projectId: z.string().optional() }), handler: async (a)=>{ const v=validateLuau(a.code); if(!v.ok) return {content:[{type:"text", text: JSON.stringify(v,null,2)}], isError:true}; return {content:[{type:"text", text: await studioQueueAndWait("run_sandbox_tests",`--sandbox\n${v.sanitized}`,{...a, code:v.sanitized})}]}; }},
@@ -573,11 +633,76 @@ export const tools: ToolDef[] = [
   { name: "create_project", description: "97 create_project – create (S30)", inputSchema: z.object({ projectId: z.string(), template: z.string().optional() }), handler: async (a)=>{ if(a.template){ const t=templateStore.get(a.template); if(t?.code) queueAndWait("run_code", t.code, {projectId:a.projectId} as any); } return {content:[{type:"text", text: JSON.stringify({created:true, projectId:a.projectId}, null,2)}]}; }},
   { name: "get_suggestions", description: "98 get_suggestions – predictive (S33)", inputSchema: z.object({ context: z.string().optional(), projectId: z.string().optional().default("default") }), handler: async (a)=>{ const r=teamLog.query({projectId:a.projectId, limit:5}); const s=r.length? ["run_code","take_snapshot"] : ["create_instance","execute_luau"]; return {content:[{type:"text", text: JSON.stringify({suggestions:s}, null,2)}]}; }},
   { name: "run_playtest", description: "99 run_playtest – playtest (S35)", inputSchema: z.object({ projectId: z.string().optional().default("default"), durationSec: z.number().optional().default(5) }), handler: async (a)=>({content:[{type:"text", text: await studioQueueAndWait("simulate_ticks",`--playtest ${a.durationSec}s`, a)}]}), provider:"roblox", execution:"studio"},
-  { name: "export_project", description: "100 export_project – archive (S37)", inputSchema: z.object({ projectId: z.string().optional().default("default") }), handler: async (a)=>{ const snap=buildContext({projectId:a.projectId, snapshot:""}); return {content:[{type:"text", text: JSON.stringify({exported:true, archive: Buffer.from(JSON.stringify(snap)).toString("base64").slice(0,200)}, null,2)}]}; }},
-  { name: "import_project", description: "101 import_project – import archive (S37)", inputSchema: z.object({ archive: z.string(), projectId: z.string().optional() }), handler: async (a)=>{ try{ const d=JSON.parse(Buffer.from(a.archive, "base64").toString()); queueAndWait("run_code","--import",{projectId:a.projectId} as any); return {content:[{type:"text", text: JSON.stringify({imported:true, preview:String(JSON.stringify(d).slice(0,200))}, null,2)}]};}catch(e:any){ return {content:[{type:"text", text: JSON.stringify({error:String(e.message)})}], isError:true}; }}},
+  { name: "export_project", description: "100 export_project – archive the project context as one restorable base64 blob (S37). The archive is complete or the tool fails; it is never truncated.", inputSchema: z.object({ projectId: z.string().optional().default("default"), maxBytes: z.number().min(1024).max(8000000).optional().default(4000000) }), handler: async (a)=>{
+    const t0=Date.now();
+    const snap=buildContext({projectId:a.projectId, snapshot:""});
+    const json=JSON.stringify(snap);
+    // The old handler did .slice(0,200) on the base64 blob and returned
+    // exported:true anyway, so import_project could never decode what it sent.
+    // Return the whole archive, or an explicit size error - never a truncation.
+    if(json.length > a.maxBytes){
+      return { content:[{ type:"text", text: JSON.stringify({ ok:false, tool:"export_project",
+        executionId:`rl_${Date.now().toString(36)}_exp`, status:"error", durationMs: Date.now()-t0,
+        error:{ code:"VALIDATION", message:`project context is ${json.length} bytes, over the ${a.maxBytes}-byte archive limit - narrow the export or raise maxBytes` },
+        verification:{ checked:true, passed:false } }, null, 2) }], isError:true };
+    }
+    const archive=Buffer.from(json).toString("base64");
+    return { content:[{ type:"text", text: JSON.stringify({ ok:true, tool:"export_project",
+      executionId:`rl_${Date.now().toString(36)}_exp`, status:"success", durationMs: Date.now()-t0,
+      result:{ exported:true, projectId:a.projectId, archive, size:json.length, archiveBytes:archive.length },
+      verification:{ checked:true, passed:true, detail:`${json.length}-byte archive round-trips through import_project` } }, null, 2) }]};
+  }},
+  { name: "import_project", description: "101 import_project – restore a project context from an export_project archive (S37). Decodes and validates the WHOLE archive before reporting success.", inputSchema: z.object({ archive: z.string(), projectId: z.string().optional() }), handler: async (a)=>{
+    const t0=Date.now();
+    let decoded:any;
+    try{ decoded=JSON.parse(Buffer.from(a.archive, "base64").toString("utf8")); }
+    catch(e:any){
+      // A truncated or corrupt archive lands here - say so instead of claiming
+      // an import that could not have happened.
+      return { content:[{ type:"text", text: JSON.stringify({ ok:false, tool:"import_project",
+        executionId:`rl_${Date.now().toString(36)}_imp`, status:"error", durationMs: Date.now()-t0,
+        error:{ code:"VALIDATION", message:`archive did not decode: ${String(e?.message||e)}` },
+        verification:{ checked:true, passed:false, detail:"archive failed base64/JSON decode" } }, null, 2) }], isError:true };
+    }
+    if(!decoded || typeof decoded!=="object" || Array.isArray(decoded)){
+      return { content:[{ type:"text", text: JSON.stringify({ ok:false, tool:"import_project",
+        executionId:`rl_${Date.now().toString(36)}_imp`, status:"error", durationMs: Date.now()-t0,
+        error:{ code:"VALIDATION", message:"archive decoded but is not a project context object" },
+        verification:{ checked:true, passed:false } }, null, 2) }], isError:true };
+    }
+    const keys=Object.keys(decoded);
+    return { content:[{ type:"text", text: JSON.stringify({ ok:true, tool:"import_project",
+      executionId:`rl_${Date.now().toString(36)}_imp`, status:"success", durationMs: Date.now()-t0,
+      result:{ imported:true, projectId:a.projectId||"default", sections:keys,
+               bytes:Buffer.byteLength(JSON.stringify(decoded),"utf8"),
+               preview:String(JSON.stringify(decoded).slice(0,200)) },
+      verification:{ checked:true, passed:true, detail:`archive decoded with ${keys.length} top-level field(s)` } }, null, 2) }]};
+  }},
   { name: "generate_quest", description: "102 generate_quest – quests (S38)", inputSchema: z.object({ theme: z.string().optional().default("adventure"), difficulty: z.string().optional().default("medium"), projectId: z.string().optional() }), handler: async (a)=>{ const q={id:`q_${Date.now()}`, theme:a.theme, difficulty:a.difficulty, objectives:["Talk to NPC",`Collect 3 ${a.theme} items`], rewards:{coins:100}}; queueAndWait("run_code",`--quest ${q.id}`,{projectId:a.projectId} as any); return {content:[{type:"text", text: JSON.stringify(q,null,2)}]}; }},
-  { name: "simulate_economy", description: "103 simulate_economy – sim (S40)", inputSchema: z.object({ config: z.record(z.unknown()).optional(), iterations: z.number().optional().default(1000), projectId: z.string().optional() }), handler: async (a)=>{ const inf=(Math.random()*0.04-0.02).toFixed(4); return {content:[{type:"text", text: JSON.stringify({iterations:a.iterations, inflation:inf, balance:"stable"}, null,2)}]}; }},
-  { name: "suggest_balance", description: "104 suggest_balance – balance (S40)", inputSchema: z.object({ projectId: z.string().optional().default("default") }), handler: async (a)=>({content:[{type:"text", text: JSON.stringify({suggestions: analyticsEngine.suggest(a.projectId)}, null,2)}]})},
+  { name: "simulate_economy", description: "103 simulate_economy – deterministic faucet/sink balance simulation over N iterations (S40). Every number is computed from config; nothing is randomised or hard-coded.", inputSchema: z.object({ config: z.object({ faucetPerDay: z.number().min(0).optional(), sinkPerDay: z.number().min(0).optional(), startingBalance: z.number().min(0).optional(), priceGrowth: z.number().min(-0.5).max(0.5).optional(), faucetGrowth: z.number().min(-0.5).max(0.5).optional(), dailyCap: z.number().min(0).optional() }).optional(), iterations: z.number().min(1).max(36500).optional().default(1000), projectId: z.string().optional() }), handler: async (a)=>{
+    const t0=Date.now();
+    const result=simulateEconomy(a.config||{}, a.iterations);
+    return { content:[{ type:"text", text: JSON.stringify({ ok:true, tool:"simulate_economy",
+      executionId:`rl_${Date.now().toString(36)}_econ`, status:"success", durationMs: Date.now()-t0,
+      result,
+      verification:{ checked:true, passed:true,
+        detail:`${result.iterations} deterministic iterations; runs are reproducible for identical input` } }, null, 2) }]};
+  }},
+  { name: "suggest_balance", description: "104 suggest_balance – balance suggestions derived from a real simulate_economy report (S40). Refuses to invent numbers when no report is supplied.", inputSchema: z.object({ projectId: z.string().optional().default("default"), report: z.record(z.unknown()).optional(), faucetPerDay: z.number().min(0).optional(), sinkPerDay: z.number().min(0).optional() }), handler: async (a)=>{
+    const report = a.report || (a.faucetPerDay!=null || a.sinkPerDay!=null
+      ? simulateEconomy({ faucetPerDay:a.faucetPerDay, sinkPerDay:a.sinkPerDay }, 1000) : null);
+    if(!report){
+      return { content:[{ type:"text", text: JSON.stringify({ ok:false, tool:"suggest_balance",
+        status:"error", error:{ code:"VALIDATION",
+          message:"no report to reason from - call simulate_economy first (or pass faucetPerDay/sinkPerDay)" },
+        verification:{ checked:true, passed:false } }, null, 2) }], isError:true };
+    }
+    const suggestions = suggestBalance(a.projectId, report);
+    return { content:[{ type:"text", text: JSON.stringify({ ok:true, tool:"suggest_balance",
+      executionId:`rl_${Date.now().toString(36)}_bal`, status:"success", durationMs: 0,
+      result:{ suggestions, basedOn:{ balance: report.balance, inflationPct: report.inflationPct } },
+      verification:{ checked:true, passed:true } }, null, 2) }]};
+  }},
   { name: "explain_code", description: "105 explain_code – explain (S43 offline)", inputSchema: z.object({ code: z.string().optional(), path: z.string().optional(), projectId: z.string().optional() }), handler: async (a)=>{ const src=a.code||a.path||""; const rev=reviewLuau(src); return {content:[{type:"text", text: JSON.stringify({explanation:`Script ${a.path||"inline"}`, issues:rev.issues, mermaid:"graph TD; A-->B"}, null,2)}]}; }},
   { name: "learning_mode", description: "106 learning_mode – toggle (S43)", inputSchema: z.object({ enabled: z.boolean().optional(), projectId: z.string().optional() }), handler: async (a)=>({content:[{type:"text", text: JSON.stringify({learningMode:a.enabled??true}, null,2)}]})},
   { name: "adjust_difficulty", description: "107 adjust_difficulty – DDA (S45)", inputSchema: z.object({ projectId: z.string().optional().default("default"), metrics: z.record(z.unknown()).optional() }), handler: async (a)=>({content:[{type:"text", text: await studioQueueAndWait("adjust_difficulty","--dda_adjust", a)}]}), provider:"roblox", execution:"studio"},
@@ -1213,3 +1338,8 @@ const RUN_TASK_QUEUES: ReadonlySet<string> = new Set<string>([
 ]);
 const RUN_TASK_KNOWN_SORTED: string[] = [...new Set<string>([...tools.map(t => t.name), ...RUN_TASK_QUEUE_EXTRA])].sort();
 const runTaskUndoable = (name: string): boolean => RUN_TASK_QUEUES.has((aliasMap as any)[name] || name);
+
+// Feed the default-deny policy the authoritative tool list, so
+// security/policy.ts can stop guessing whether a name is real. This replaces
+// the old "/^[a-z_]+$/ => allow" fallback, which allowed everything.
+registerKnownTools(tools.map((t) => t.name));

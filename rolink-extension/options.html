@@ -63,6 +63,7 @@ button.danger{background:#21262d;border-color:#da3633;color:var(--red)}
   <p class="desc">Where the extension looks for the local bridge. Defaults work for most setups.</p>
   <label><span class="lk">Bridge WebSocket URL</span><input id="bridge" value="ws://127.0.0.1:17613"></label>
   <label><span class="lk">MCP HTTP URL (optional, for advanced tools)</span><input id="mcp" value="http://127.0.0.1:3001"></label>
+  <label><span class="lk">Bridge token (only if you started the bridge with ROLINK_REQUIRE_TOKEN=1)</span><input id="token" placeholder="leave empty unless the bridge requires one"></label>
   <div class="row">
     <button class="primary" id="save">Save changes</button>
     <button id="reset">Reset to defaults</button>

@@ -79,13 +79,21 @@ echo "  [2/3] Checking websockets library..."
 if ! "$PY" -c "import websockets" >/dev/null 2>&1; then
     echo "        Installing websockets - first time only..."
     log "websockets missing, installing via pip --user."
-    if ! "$PY" -m pip install --user websockets >/dev/null 2>&1; then
+    # Prefer the pinned range in requirements.txt (>=12,<18); an unpinned
+    # install lets a future upstream major break the bridge on a user's machine.
+    REQ="$(cd "$(dirname "$0")" && pwd)/requirements.txt"
+    if [ -f "$REQ" ]; then
+        PIP_TARGET=(-r "$REQ")
+    else
+        PIP_TARGET=("websockets>=12,<18")
+    fi
+    if ! "$PY" -m pip install --user "${PIP_TARGET[@]}" >/dev/null 2>&1; then
         # Newer macOS Pythons (Homebrew / python.org) mark the environment as
         # externally managed (PEP 668) and refuse --user. Retry allowing it,
         # since this is the user's own machine and a single small pure-Python
         # dependency, not a system package.
         log "pip --user failed; retrying with --break-system-packages."
-        "$PY" -m pip install --user --break-system-packages websockets >/dev/null 2>&1 || true
+        "$PY" -m pip install --user --break-system-packages "${PIP_TARGET[@]}" >/dev/null 2>&1 || true
     fi
     if ! "$PY" -c "import websockets" >/dev/null 2>&1; then
         echo

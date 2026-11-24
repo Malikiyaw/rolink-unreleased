@@ -1,4 +1,4 @@
--- RoLink.lua — Studio Plugin (154 tools, production)
+-- RoLink.lua — Studio Plugin (160 tools, production)
 -- Place in Studio Plugins folder or Rojo. Polls MCP every 200ms, executes, snapshots, heals, reports.
 local HttpService = game:GetService("HttpService")
 local ChangeHistoryService = game:GetService("ChangeHistoryService")
@@ -10,7 +10,7 @@ local PLUGIN_NAME = "RoLink 2.1"
 local PLUGIN_VERSION = "2.11.0"
 
 local toolbar = plugin:CreateToolbar(PLUGIN_NAME)
-local btn = toolbar:CreateButton("RoLink", "AI bridge (154 tools, poll 200ms)", "rbxassetid://0")
+local btn = toolbar:CreateButton("RoLink", "AI bridge (160 tools, poll 200ms)", "rbxassetid://0")
 btn.ClickableWhenViewportHidden = true
 local enabled = true
 
@@ -90,10 +90,24 @@ local HOOK_EVERY = 100000
 local HOOK_MAX_HITS = 100 -- ~10M instructions ≈ a few seconds of CPU
 local HAS_SETHOOK = type(debug) == "table" and type((debug::any).sethook) == "function"
 local HAS_SETFENV = type(setfenv) == "function"
-local function applyEnv(fn:any)
-  if HAS_SETFENV and type(fn) == "function" then
-    pcall(function() (setfenv::any)(fn, safeEnv) end)
+-- FAIL CLOSED. This used to swallow the pcall result and simply not apply the
+-- environment when setfenv was unavailable, which meant the "sandbox" ran the
+-- model's code with full globals and no warning. applyEnv now reports whether
+-- the allowlist actually took effect, and callers refuse to run code when it
+-- did not.
+local function applyEnv(fn:any): (boolean, string?)
+  if type(fn) ~= "function" then
+    return false, "applyEnv: not a function"
   end
+  if not HAS_SETFENV then
+    return false, "sandbox unavailable: setfenv is missing in this Luau runtime, " ..
+                  "so the allowlist environment cannot be applied"
+  end
+  local ok, err = pcall(function() (setfenv :: any)(fn, safeEnv) end)
+  if not ok then
+    return false, "sandbox unavailable: setfenv failed (" .. tostring(err):sub(1, 120) .. ")"
+  end
+  return true, nil
 end
 -- Static guard: a tight loop with no yield hangs Studio with no remote kill
 -- (no hook fallback). Reject it as a validation error instead of hanging.
@@ -243,7 +257,13 @@ local function sandboxRun(code:string): (boolean, any, string, string)
   -- 'return'" and burying the real error under require_failed.
   if cok and type(cfn) == "function" then
     local res = cfn
-    applyEnv(res)
+    -- Refuse to execute when the sandbox could not be applied. Running the
+    -- model's code with full globals is worse than an honest error, and the
+    -- old code did exactly that whenever setfenv was unavailable.
+    local envOk, envErr = applyEnv(res)
+    if not envOk then
+      return finish(false, tostring(envErr), "none")
+    end
     local okRun, a, b = pcall(runWithDeadline, res, code)
     local ok2: boolean? = nil
     local ret: any = nil
@@ -6788,4 +6808,4 @@ task.spawn(function() while true do task.wait(20); if enabled then pcall(functio
   if #workspace:GetDescendants()>600 then metrics.avgFPS=35 end
   HttpService:RequestAsync({Url=MCP_URL.."/metrics", Method="POST", Headers={["Content-Type"]="application/json"}, Body=HttpService:JSONEncode(metrics)})
 end) end end end)
-log("RoLink 2.11.0 loaded [repo copy] - 154 tools ready, polling "..MCP_URL)
+log("RoLink 2.11.0 loaded [repo copy] - 160 tools ready, polling "..MCP_URL)

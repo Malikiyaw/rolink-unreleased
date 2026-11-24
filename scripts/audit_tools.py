@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 # scripts/audit_tools.py - RoLink Tool Audit (existence is not execution).
 #   py -3 scripts/audit_tools.py [--json-only]
-# For every tool in tests/__registry__.json, proves the full chain statically:
+# For every tool in catalog/tools.json, proves the full chain statically:
 #   zod schema -> terminal envelope path -> plugin branch -> prompt -> sample
 # Classification:
 #   verified - full chain, real Studio branch (or deterministic local handler)
@@ -34,8 +34,72 @@ def plugin_lines(plugin, name):
     return [ln for ln in plugin.splitlines() if f'"{name}"' in ln]
 
 
+# Success-shaped output that was never derived from anything.
+# The 2.10.0 truth pass removed 15 of these from the bridge; the TypeScript
+# mirror kept several, because the old audit only knew how to spot a literal
+# `queued:true`. These are the patterns that let `simulate_economy` return
+# Math.random(), `export_project` return a truncated archive, and `rollback`
+# return {rolledBack:[...]} without a captured snapshot.
+_FABRICATION_PATTERNS = [
+    # Randomness standing in for a computed result.
+    (re.compile(r"Math\.random\(\)"), "fabricated number (Math.random stands in for a result)"),
+    # Success-shaped output built from a literal, with no branch that could
+    # make it false. `rolledBack: undone ? steps : 0` is honest; a bare
+    # `imported: true` in a payload is not.
+    (re.compile(r"\b(testsPassed|imported|exported|rolledBack|ddaApplied)\s*:\s*true\b(?!\s*[?:])"),
+     "hard-coded success flag"),
+    # Truncating the archive the caller is told is complete.
+    (re.compile(r"toString\(\"base64\"\)\.slice\("), "archive truncated then reported as exported"),
+]
+# A handler that legitimately uses randomness (e.g. id minting) is fine; only
+# flag it when the value flows into the returned payload AND the handler does no
+# real work (no queue call, no store read).
+_REAL_WORK = ("studioQueueAndWait", "queueAndWait", "waitForResult", "commandQueue",
+              "rollbackManager", "database", "readFile", "searchAssets",
+              "perfTracker", "teamLog", "buildContext")
+
+
+def _fabricated_receipt(seg):
+    """Return a problem string when a handler fakes its own output, else ''."""
+    if not seg:
+        return ""
+    does_real_work = any(tok in seg for tok in _REAL_WORK)
+    for rx, why in _FABRICATION_PATTERNS:
+        if not rx.search(seg):
+            continue
+        # An id mint (executionId, snapshotId) and a handler that demonstrably
+        # does real work both make the match explicable rather than suspicious.
+        if "Math.random" in why and does_real_work:
+            continue
+        if "hard-coded success flag" in why:
+            # A handler with a real failure path (catch / isError / ok:false)
+            # only emits the success flag after validation passed, which is the
+            # behaviour we want. Flag only unconditional success.
+            has_failure_path = any(t in seg for t in ("isError", "catch", "ok:false", "ok: false", "status:\"error\""))
+            if does_real_work or has_failure_path:
+                continue
+        return "possible fabricated receipt (%s)" % why
+    return ""
+
+
+def load_catalog():
+    """The catalogue is a product file (catalog/tools.json).
+
+    It used to be tests/__registry__.json, which made a test fixture the runtime
+    source of truth. The legacy path stays as a fallback for old checkouts.
+    """
+    for rel in (("catalog", "tools.json"), ("tests", "__registry__.json")):
+        path = os.path.join(ROOT, *rel)
+        if os.path.exists(path):
+            raw = json.load(io.open(path, encoding="utf-8"))
+            if isinstance(raw, dict):
+                raw = raw.get("tools") or []
+            return raw
+    raise SystemExit("audit: no catalog found (catalog/tools.json)")
+
+
 def main():
-    registry = json.load(io.open(os.path.join(ROOT, "tests", "__registry__.json"), encoding="utf-8"))
+    registry = load_catalog()
     prompts = json.load(io.open(os.path.join(ROOT, "generated", "tool-prompts.json"),
                                 encoding="utf-8")).get("prompts", {})
     try:
@@ -59,6 +123,10 @@ def main():
         elif "queued:true" in seg.replace(" ", "") and "studioQueueAndWait" not in seg \
                 and "waitForResult" not in seg:
             problems.append("handler can return bare queued:true")
+        else:
+            fabricated = _fabricated_receipt(seg)
+            if fabricated:
+                problems.append(fabricated)
         if not plugin_lines(plugin, name):
             problems.append("no plugin branch")
         if_mock = any("mock" in ln.lower() for ln in plugin_lines(plugin, name))

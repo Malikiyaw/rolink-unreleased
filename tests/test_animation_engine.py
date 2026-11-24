@@ -9,6 +9,14 @@ import io, os, re, unittest
 HERE = os.path.dirname(os.path.abspath(__file__))
 ROOT = os.path.dirname(HERE)
 
+try:
+    from _catalog import load_catalog as _load_catalog
+except ImportError:  # invoked with a different sys.path
+    import os as _os, sys as _sys
+    _sys.path.insert(0, _os.path.dirname(_os.path.abspath(__file__)))
+    from _catalog import load_catalog as _load_catalog
+
+
 
 def read(*parts):
     with io.open(os.path.join(ROOT, *parts), encoding="utf-8", errors="replace") as f:
@@ -42,8 +50,7 @@ class AnimationEngineTest(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
         cls.plugin = read("studio-plugin", "RoLink.lua")
-        with io.open(os.path.join(HERE, "__registry__.json"), encoding="utf-8") as f:
-            cls.registry = __import__("json").load(f)
+        cls.registry = _load_catalog()
 
     def test_new_helpers_defined_once(self):
         for f in ENGINE_FNS:
@@ -112,7 +119,7 @@ class AnimationEngineTest(unittest.TestCase):
 
     def test_new_tools_in_registry_and_dispatch(self):
         for n in NEW_TOOLS:
-            self.assertIn(n, self.registry, n + " missing from __registry__.json")
+            self.assertIn(n, self.registry, n + " missing from the tool catalog")
             self.assertIn('tool=="%s"' % n, self.plugin, n + " missing from dispatcher")
 
     def test_getAnimationInfo_resolves_durable_paths(self):

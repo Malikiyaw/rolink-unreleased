@@ -13,6 +13,29 @@ const DEFAULT_BRIDGE_URL = `ws://127.0.0.1:${PORT}`;
 // startup, but keep the loopback-only default so a malformed saved value can
 // never turn this local bridge into a remote WebSocket client.
 let BRIDGE_URL = DEFAULT_BRIDGE_URL;
+// Optional pairing token. The bridge checks Origin on every frame, which is
+// what actually blocks a random web page; a token adds defence in depth for
+// users who opt in with ROLINK_REQUIRE_TOKEN=1. Stored by the options page and
+// appended to the handshake query string (?token=...).
+let BRIDGE_TOKEN = "";
+
+/** Bridge URL with the token appended, if one is configured. */
+function bridgeUrlWithToken() {
+  if (!BRIDGE_TOKEN) return BRIDGE_URL;
+  const sep = BRIDGE_URL.includes("?") ? "&" : "?";
+  return `${BRIDGE_URL}${sep}token=${encodeURIComponent(BRIDGE_TOKEN)}`;
+}
+
+/** Load the persisted endpoint + token together, then reconnect. */
+function loadEndpointAndConnect() {
+  try {
+    chrome.storage.local.get(["bridgeUrl", "bridgeToken"], (v) => {
+      if (isLoopbackBridgeUrl(v && v.bridgeUrl)) BRIDGE_URL = v.bridgeUrl;
+      BRIDGE_TOKEN = (v && typeof v.bridgeToken === "string") ? v.bridgeToken : "";
+      connect();
+    });
+  } catch (_) { connect(); }
+}
 function isLoopbackBridgeUrl(value) {
   try {
     const u = new URL(String(value || ""));
@@ -20,12 +43,7 @@ function isLoopbackBridgeUrl(value) {
       (u.hostname === "127.0.0.1" || u.hostname === "localhost" || u.hostname === "::1");
   } catch (_) { return false; }
 }
-try {
-  chrome.storage.local.get(["bridgeUrl"], (v) => {
-    if (isLoopbackBridgeUrl(v && v.bridgeUrl)) BRIDGE_URL = v.bridgeUrl;
-    connect();
-  });
-} catch (_) { connect(); }
+loadEndpointAndConnect();
 
 // Chat sites where a RoLink provider content script runs. Status pushes go
 // to every tab matching these. Add the new provider's URL pattern here (and in
@@ -93,7 +111,7 @@ function connect() {
   }
   clearTimeout(reconnectTimer);
   try {
-    ws = new WebSocket(BRIDGE_URL);
+    ws = new WebSocket(bridgeUrlWithToken());
   } catch (e) {
     log("WebSocket ctor failed", e);
     scheduleReconnect();
@@ -428,9 +446,14 @@ chrome.runtime.onMessage.addListener((msg, _sender, sendResponse) => {
         break;
       }
       case "add_server": {
+        // `confirm: true` is a CONSENT signal the bridge requires, because this
+        // writes a spawn spec that Popen executes on the next start. It is set
+        // only here - i.e. only when a human pressed "Add server" in the
+        // options page - and never from a model-initiated path.
         const r = await send({
           type: "add_server", server_id: msg.server_id,
           command: msg.command, args: msg.args, env: msg.env,
+          confirm: true,
         }, 15000);
         sendResponse(r);
         break;
@@ -467,17 +490,11 @@ chrome.runtime.onMessage.addListener((msg, _sender, sendResponse) => {
 // Wake/keepalive hooks.
 chrome.runtime.onStartup.addListener(() => {
   try {
-    chrome.storage.local.get(["bridgeUrl"], (v) => {
-      if (isLoopbackBridgeUrl(v && v.bridgeUrl)) BRIDGE_URL = v.bridgeUrl;
-      connect();
-    });
+    loadEndpointAndConnect();
   } catch (_) { connect(); }
 });
 chrome.runtime.onInstalled.addListener(() => {
   try {
-    chrome.storage.local.get(["bridgeUrl"], (v) => {
-      if (isLoopbackBridgeUrl(v && v.bridgeUrl)) BRIDGE_URL = v.bridgeUrl;
-      connect();
-    });
+    loadEndpointAndConnect();
   } catch (_) { connect(); }
 });

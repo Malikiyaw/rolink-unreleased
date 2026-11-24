@@ -1,0 +1,10 @@
+# Development / CI dependencies (the runtime set plus the test tooling).
+#
+#   pip install -r requirements-dev.txt
+#   python -m pytest tests/ -q
+#
+-r requirements.txt
+
+pytest>=7.4
+coverage>=7.0
+pyflakes>=3.0

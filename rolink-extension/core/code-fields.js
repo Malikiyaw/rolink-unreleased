@@ -10,8 +10,8 @@
 window.ROLINK_CODE_FIELDS = {
   "version": 2,
   "source": "mcp-server/src/tools/registry.ts",
-  "generatedAt": "2026-11-21T12:43:59.725Z",
-  "toolCount": 159,
+  "generatedAt": "2026-11-24T10:41:28.253Z",
+  "toolCount": 160,
   "toolFields": {
     "get_instances": [
       "path",
@@ -221,6 +221,7 @@ window.ROLINK_CODE_FIELDS = {
       "keyframes[].poses[].part",
       "name",
       "projectId",
+      "state",
       "target"
     ],
     "play_animation": [
@@ -635,6 +636,13 @@ window.ROLINK_CODE_FIELDS = {
       "anim",
       "projectId"
     ],
+    "retarget_animation": [
+      "anim",
+      "fromRig",
+      "newName",
+      "projectId",
+      "toRig"
+    ],
     "set_track_lock": [
       "anim",
       "projectId",
@@ -714,6 +722,7 @@ window.ROLINK_CODE_FIELDS = {
     "expect",
     "exports",
     "fromId",
+    "fromRig",
     "functionName",
     "goal",
     "handlerCode",
@@ -750,6 +759,7 @@ window.ROLINK_CODE_FIELDS = {
     "snapshotId",
     "soundId",
     "speaker",
+    "state",
     "store",
     "studio_id",
     "system",
@@ -759,6 +769,7 @@ window.ROLINK_CODE_FIELDS = {
     "text",
     "theme",
     "toId",
+    "toRig",
     "tool",
     "track",
     "trackPath",

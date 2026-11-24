@@ -1,0 +1,123 @@
+name: CI
+
+# Nothing ran these checks before, so catalog drift, a stale HUD registry and a
+# TypeScript mirror that disagreed with the Python bridge all shipped silently.
+# Every job here maps to a bug that actually happened.
+on:
+  push:
+    branches: ["**"]
+  pull_request:
+  workflow_dispatch:
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  python:
+    name: Python bridge (${{ matrix.python }})
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        # 3.9 is the documented floor; 3.13 catches forward-compat breakage.
+        python: ["3.9", "3.11", "3.13"]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python }}
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements-dev.txt
+      - name: Compile check
+        run: python -m py_compile bridge.py launch_studio_mcp.py
+      - name: Unit + integration tests
+        run: python -m pytest tests/ -q
+
+  node:
+    name: MCP server + extension
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+          cache: npm
+          cache-dependency-path: mcp-server/package-lock.json
+      - name: Install
+        working-directory: mcp-server
+        run: npm ci --no-audit --no-fund
+      - name: Typecheck
+        working-directory: mcp-server
+        run: ./node_modules/.bin/tsc -p tsconfig.json --noEmit
+      - name: Vitest
+        working-directory: mcp-server
+        run: ./node_modules/.bin/vitest run
+      - name: Extension self-tests
+        working-directory: mcp-server
+        run: |
+          node ../rolink-extension/test-parser.js
+          node ../rolink-extension/test-agent.js
+          node ../rolink-extension/test-chatgpt.js
+      - name: JS syntax
+        run: bash scripts/check_syntax.sh
+      # The parity suite shells out to python3 to compare bridge.py _luau_risk
+      # with the TypeScript preflight. Without the interpreter it would skip.
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - name: Install python for parity tests
+        run: pip install -r requirements-dev.txt
+      - name: Preflight parity (python <-> typescript)
+        working-directory: mcp-server
+        run: ./node_modules/.bin/vitest run tests/preflightParity.test.ts
+
+  guards:
+    name: Generated artifacts are in sync
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+          cache: npm
+          cache-dependency-path: mcp-server/package-lock.json
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - name: Install
+        working-directory: mcp-server
+        run: npm ci --no-audit --no-fund
+      - name: Install python deps
+        run: pip install -r requirements-dev.txt
+      - name: Luau block/line guard
+        run: python scripts/check_luau_blocks.py
+      - name: Tool audit (0 failing required)
+        run: python scripts/audit_tools.py
+      - name: HUD registry matches the catalog
+        run: node scripts/emit-tool-registry.js --check
+      - name: Regenerate every artifact and prove nothing changed
+        run: |
+          npx --prefix mcp-server tsx scripts/generate-tool-prompts.ts
+          npx --prefix mcp-server tsx scripts/generate-code-fields.ts
+          node scripts/emit-code-fields.js
+          node scripts/emit-tool-registry.js
+          if ! git diff --exit-code; then
+            echo "::error::Generated artifacts are stale. Commit the regenerated files."
+            git diff --stat
+            exit 1
+          fi
+      - name: Version strings agree
+        run: python scripts/check_versions.py
+
+  versions:
+    name: Version consistency
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - run: python scripts/check_versions.py

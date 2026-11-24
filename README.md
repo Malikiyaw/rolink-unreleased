@@ -66,7 +66,7 @@ Open Studio and load a Place, then enable MCP (first time only):
 - Click **Manage MCP Servers**
 - Click **Enable Studio as MCP Server**
 
-### 2b. Install the RoLink Studio plugin (unlocks all 154 tools)
+### 2b. Install the RoLink Studio plugin (unlocks all 160 tools)
 
 Roblox's built-in MCP only speaks ~27 commands. The rest of the catalog runs
 through our own plugin:
@@ -113,6 +113,41 @@ If any one differs, that component came from a different install — reinstall i
 - **Remember your project across sessions** (structured project memory: architecture, services, bugs, decisions)
 - **Animate any model (beta)**: model-animation tools (analyze, keyframes, markers, preview, validate, retime/blend/fix, attack/idle/walk scaffolds) plus the in-Studio timeline editor (RoLink toolbar → Anim, beta)
 - **Create and manage Roblox motion**: `create_motion_animation` builds a native Motor6D pose hierarchy and Play-time controller; `create_motion_effect` creates real tween/shake/FOV/pulse controllers with inspect/remove lifecycle tools. Easing (`quad/cubic/sine` families plus `bezierOut` overshoot and `springOut` settle, per-pose overrides, arc lift) plus `preview` velocity/loop-seam metrics and `validate`/`fix` audits turn sparse blocks into smooth motion. Studio plugins cannot prove rendered pixels, so results report verified paths/data and use Play for the visual check.
+
+## Security: the bridge is local-only and origin-checked
+
+The Bridge listens on `127.0.0.1`, which means every web page in your browser can
+also reach that port. RoLink therefore treats the browser as untrusted:
+
+- **Origin guard (always on).** A connection is accepted only from one of the
+  supported provider origins (the sites listed above) or from a browser
+  extension. Page JavaScript cannot forge or suppress the `Origin` header, so a
+  random site you visit cannot drive your Studio session. Clients that send no
+  `Origin` at all — the Studio plugin, `curl`, the test suite — are allowed,
+  because they are not browsers.
+- **No CORS on the queue port.** A web page cannot read any response, so even a
+  blind request cannot be used to exfiltrate your project.
+- **New MCP servers need consent.** Adding a server writes a command that the
+  Bridge later launches, so the Bridge requires an explicit confirmation from
+  the Settings page and refuses commands containing shell metacharacters.
+
+The Bridge prints its posture at startup:
+
+```
+browser-origin guard: ON (19 provider origins + extensions; non-browser clients allowed)
+bridge token: off (set ROLINK_REQUIRE_TOKEN=1 to require one)
+```
+
+**Optional token.** For defence in depth, start the Bridge with
+`ROLINK_REQUIRE_TOKEN=1` (e.g. `set ROLINK_REQUIRE_TOKEN=1` before `start.bat`).
+It then writes a token to `memory/bridge-token.txt`; paste that into
+**⚙ Settings → Bridge token**. Both sides must match or the Bridge refuses the
+connection. You do not need this to be safe — the origin guard is what closes
+the browser hole — but it protects against other local processes on a shared
+machine.
+
+If you see `REJECTED websocket from origin ...` in the Bridge terminal, a page
+that is not on the supported list tried to connect. That is the guard working.
 
 ## Panel status
 

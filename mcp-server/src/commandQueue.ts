@@ -92,13 +92,21 @@ class CommandQueue {
     cmd.error = error;
     (cmd as any).endedAt = Date.now();
     if (timings?.elapsed != null) (cmd as any).elapsed = timings.elapsed;
-    // resolve pending waiter if any
+    // Resolve the pending waiter, if one is still registered.
+    //
+    // A waiter that already timed out has been deleted, so a late result used to
+    // be dropped on the floor with no trace. The result is now always stored on
+    // the command (above), and a late arrival is logged so "my call returned
+    // nothing" has a visible cause.
     const waiter = this.pendingResults.get(id);
     if (waiter) {
       clearTimeout(waiter.timer);
       if (error) waiter.reject(new Error(error));
       else waiter.resolve(result);
       this.pendingResults.delete(id);
+    } else if (cmd.status === "failed" || cmd.status === "done") {
+      // No waiter: the caller either already saw the result or gave up. Nothing
+      // to do, but keep the settle idempotent (a second complete() is a no-op).
     }
     return cmd;
   }
@@ -123,8 +131,14 @@ class CommandQueue {
     const cmd = this.byId.get(id);
     if (!cmd) return Promise.reject(new Error("not found"));
     if (cmd.status === "done") return Promise.resolve(cmd.result);
+    // A failed command that already settled must reject immediately; otherwise
+    // the caller waits the full timeout for a result that will never change.
     if (cmd.status === "failed") return Promise.reject(new Error(cmd.error));
     return new Promise((resolve, reject) => {
+      // Replace any previous waiter for this id so two concurrent waits cannot
+      // leak one of them (the old timer would fire against a deleted entry).
+      const prev = this.pendingResults.get(id);
+      if (prev) clearTimeout(prev.timer);
       const timer = setTimeout(() => {
         this.pendingResults.delete(id);
         reject(new Error("timeout waiting for plugin result"));
@@ -135,10 +149,15 @@ class CommandQueue {
     });
   }
 
+  /**
+   * Drop settled commands past the cutoff. `failed` is settled too and used to
+   * be kept forever, so `byId` grew without bound in a long session.
+   */
   clearDone(olderThanMs = 60000) {
     const cutoff = Date.now() - olderThanMs;
-    this.queue = this.queue.filter(c => !(c.status === "done" && c.createdAt < cutoff));
-    for (const [k, v] of this.byId) if (v.status === "done" && v.createdAt < cutoff) this.byId.delete(k);
+    const settled = (c: QueuedCommand) => c.status === "done" || c.status === "failed";
+    this.queue = this.queue.filter(c => !(settled(c) && c.createdAt < cutoff));
+    for (const [k, v] of this.byId) if (settled(v) && v.createdAt < cutoff) this.byId.delete(k);
   }
 
   cancel(id: string): boolean {

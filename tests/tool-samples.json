@@ -859,5 +859,13 @@
   },
   "get_model_graph": {
     "projectId": "test"
+  },
+  "retarget_animation": {
+    "anim": "Workspace/RoLinkAnimations/R15Slash",
+    "fromRig": "Workspace/R15Dummy",
+    "toRig": "Workspace/R6Dummy",
+    "newName": "R6Slash",
+    "scale": 1.15,
+    "projectId": "test"
   }
 }

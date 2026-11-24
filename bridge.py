@@ -89,6 +89,157 @@ CONFIG_LOCK = threading.RLock()
 # never be edited/removed through the extension (it is what RoLink is FOR).
 PRIMARY_SERVER_ID = "roblox"
 
+# ══════════════════════════════════════════════════════════════════════════
+#  BROWSER-ORIGIN GUARD + optional token
+# ══════════════════════════════════════════════════════════════════════════
+# THREAT: this process listens on 127.0.0.1, which every web page in the user's
+# browser can also reach. Without a guard, any page the user happens to visit
+# while the bridge is running can open ws://127.0.0.1:17613 and drive Studio
+# (execute_luau, read every script), poll the Studio queue, or POST
+# /queue/enqueue. That is remote code execution against the user's place,
+# triggered by a background tab.
+#
+# DEFENCE: the browser sets the `Origin` header itself; page JavaScript cannot
+# forge or suppress it. So an allowlist of the provider origins the extension
+# actually runs on is decisive and needs no secret to distribute. A request
+# with NO Origin header is not a browser (the Studio plugin's HttpService poll,
+# curl, the test suite), so it is allowed - the plugin has no way to send one.
+#
+# The optional token (ROLINK_REQUIRE_TOKEN=1) adds defence in depth for users
+# who want it: the extension reads it from /token, which is served WITHOUT CORS
+# headers so a web page cannot read the response body (it can only send blind
+# requests, which the origin guard already rejects).
+_ALLOWED_ORIGINS = frozenset([
+    "https://chat.deepseek.com",
+    "https://deepseek.com",
+    "https://chatgpt.com",
+    "https://chat.openai.com",
+    "https://gemini.google.com",
+    "https://www.kimi.ai",
+    "https://kimi.ai",
+    "https://chat.z.ai",
+    "https://chat.qwen.ai",
+    "https://arena.ai",
+    "https://lmarena.ai",
+    "https://www.meta.ai",
+    "https://meta.ai",
+    "https://claude.ai",
+    "https://huggingface.co",
+    "https://dola.com",
+    "https://www.dola.com",
+    # Local tooling (the options page opened from disk, local doc sites).
+    "http://127.0.0.1",
+    "http://localhost",
+])
+# Browser-extension origins are minted per install, so they are matched by
+# scheme rather than by value. This is what the real extension uses.
+_ALLOWED_ORIGIN_SCHEMES = ("chrome-extension://", "moz-extension://", "safari-web-extension://")
+
+
+def origin_allowed(origin):
+    """True when a request may talk to this bridge.
+
+    An absent/empty Origin means a non-browser client (Studio plugin, curl,
+    tests) and is allowed. A present Origin must be a known provider or an
+    extension origin. Anything else is rejected.
+    """
+    if origin is None:
+        return True
+    o = str(origin).strip()
+    if not o:
+        return True
+    # "null" is what a sandboxed iframe / file:// page sends; never trust it.
+    if o == "null":
+        return False
+    base = o.split("?", 1)[0].split("#", 1)[0]
+    # Normalise an explicit port away ("https://claude.ai:443" == "https://claude.ai",
+    # "http://127.0.0.1:8000" is still the local machine). Only a numeric port
+    # after the host is stripped; nothing else in the URL is rewritten.
+    try:
+        scheme, _, rest = base.partition("://")
+        if rest:
+            slash = rest.find("/")
+            host = rest if slash < 0 else rest[:slash]
+            tail = "" if slash < 0 else rest[slash:]
+            if ":" in host:
+                h, _, port = host.rpartition(":")
+                if port.isdigit():
+                    host = h
+            base = f"{scheme}://{host}{tail}"
+    except Exception:
+        pass
+    if base in _ALLOWED_ORIGINS:
+        return True
+    for scheme in _ALLOWED_ORIGIN_SCHEMES:
+        if base.startswith(scheme):
+            return True
+    return False
+
+
+def _load_or_create_token():
+    """Stable per-install bridge token. Env override wins (tests use it)."""
+    env = os.environ.get("ROLINK_BRIDGE_TOKEN")
+    if env:
+        return env.strip()
+    path = os.path.join(HERE, "memory", "bridge-token.txt")
+    try:
+        if os.path.exists(path):
+            with open(path, "r", encoding="utf-8") as f:
+                tok = f.read().strip()
+            if tok:
+                return tok
+        import secrets
+        tok = secrets.token_urlsafe(32)
+        os.makedirs(os.path.dirname(path), exist_ok=True)
+        with open(path, "w", encoding="utf-8") as f:
+            f.write(tok)
+        try:
+            os.chmod(path, 0o600)
+        except Exception:
+            pass
+        return tok
+    except Exception:
+        return ""
+
+
+BRIDGE_TOKEN = _load_or_create_token()
+# Off by default so an existing extension install keeps working; the origin
+# guard below is what actually closes the browser hole and it is always on.
+REQUIRE_TOKEN = os.environ.get("ROLINK_REQUIRE_TOKEN", "0").strip() not in ("0", "", "false", "False")
+
+
+def token_ok(presented):
+    """Validate a caller-supplied token. Only meaningful when REQUIRE_TOKEN."""
+    if not REQUIRE_TOKEN:
+        return True
+    if not BRIDGE_TOKEN:
+        # Misconfiguration must not silently disable auth.
+        return False
+    import hmac
+    return hmac.compare_digest(str(presented or ""), BRIDGE_TOKEN)
+
+
+def _token_from_ws(ws):
+    """Token from the WebSocket handshake query string (?token=...), if any."""
+    try:
+        req = getattr(ws, "request", None)
+        path = getattr(req, "path", "") if req is not None else ""
+        if not path and req is not None:
+            path = getattr(req, "uri", "") or ""
+        if "?" not in (path or ""):
+            return ""
+        from urllib.parse import urlparse, parse_qs
+        return (parse_qs(urlparse(path).query).get("token") or [""])[0]
+    except Exception:
+        return ""
+
+
+async def _reject_ws(ws, code, reason):
+    try:
+        await ws.close(code=code, reason=reason)
+    except Exception:
+        pass
+
 # ── RoLink unified catalog (Option A: single WS, bridge answers local tools) ──
 # Workflow stays RoLink-identical: extension -> bridge :17613 -> StudioMCP.
 # StudioMCP only knows Roblox-native tools. RoLink's 140-catalog adds pure-local
@@ -98,12 +249,32 @@ PRIMARY_SERVER_ID = "roblox"
 # See docs/workflow-contract.md.
 try:
     import json as _json_catalog
-    _REG_PATH = os.path.join(HERE, "tests", "__registry__.json")
+    # The catalog is a PRODUCT file. It used to live at tests/__registry__.json,
+    # which meant a release without the test folder booted a degraded bridge and
+    # made a test fixture the source of truth for 159 tools. catalog/tools.json
+    # is the shipped copy; the old test path stays as a fallback so an existing
+    # extracted folder keeps working after an in-place update.
+    _REG_CANDIDATES = [
+        os.path.join(HERE, "catalog", "tools.json"),
+        os.path.join(HERE, "tests", "__registry__.json"),
+    ]
+    _REG_PATH = None
+    for _cand in _REG_CANDIDATES:
+        if os.path.exists(_cand):
+            _REG_PATH = _cand
+            break
+    if _REG_PATH is None:
+        raise FileNotFoundError("no catalog file found (catalog/tools.json)")
     with open(_REG_PATH, "r", encoding="utf-8") as _f:
-        ROLINK_TOOL_NAMES = _json_catalog.load(_f)
+        _catalog_raw = _json_catalog.load(_f)
+    # catalog/tools.json is {"tools": [...]}; the legacy test file is a bare list.
+    if isinstance(_catalog_raw, dict):
+        ROLINK_TOOL_NAMES = _catalog_raw.get("tools") or []
+    else:
+        ROLINK_TOOL_NAMES = _catalog_raw
     if not isinstance(ROLINK_TOOL_NAMES, list):
         ROLINK_TOOL_NAMES = []
-    _CATALOG_ERROR = "" if ROLINK_TOOL_NAMES else "registry file is empty"
+    _CATALOG_ERROR = "" if ROLINK_TOOL_NAMES else "catalog file is empty"
 except Exception as e:
     ROLINK_TOOL_NAMES = []
     _CATALOG_ERROR = str(e) or "load failed"
@@ -2083,7 +2254,6 @@ def _import_build(a):
     transform = {"phase": "transform", "commands": [c["tool"] for c in cmds],
                  "ok": (False if (skipped and not cmds) else None), "skipped": skipped}
     pivot = None
-    luau_pivot = None
     if cmds:
         try:
             traw = _local_batch_queue({"commands": cmds, "mode": mode, "projectId": project}, 60)
@@ -3591,9 +3761,44 @@ def _write_config(cfg):
     os.replace(tmp, CONFIG_PATH)
 
 
-def config_add_server(server_id, command, args=None, env=None):
-    """Add/replace an addon server in config.json. Refuses to touch the primary
-    (roblox) server. Returns (ok, error)."""
+# Characters that let a spawn spec turn into something other than "run this
+# MCP server": shell metacharacters (the spec is passed to Popen and, on
+# Windows, cmd.exe for npx-family shims) and path traversal.
+_SPAWN_METACHARS = set(";&|<>`$\\'\"\n\r\t")
+
+
+def _spawn_spec_is_plain(spec):
+    """True when a command string contains no shell/piping metacharacters.
+
+    Kept deliberately strict: a legitimate MCP launcher is a program name plus
+    arguments. Anything that looks like shell composition is refused unless the
+    operator opts in with allow_shell=True (an explicit UI decision, never a
+    model-initiated tool call).
+    """
+    s = str(spec or "")
+    if any(ch in _SPAWN_METACHARS for ch in s):
+        return False
+    # ".." path traversal on the configured working directory.
+    if ".." in s:
+        return False
+    return True
+
+
+def config_add_server(server_id, command, args=None, env=None,
+                      confirm=False, allow_shell=False):
+    """Add/replace an addon server in config.json.
+
+    This writes a spawn spec that the bridge executes with subprocess.Popen on
+    the next (re)start, so it is a code-execution primitive and is gated
+    accordingly:
+
+      * the primary (roblox) server can never be edited or replaced;
+      * the caller must pass an explicit confirm=True, which only the options
+        page sends after a real click - never a model-initiated tool call;
+      * the command must be a plain launcher unless allow_shell=True.
+
+    Returns (ok, error).
+    """
     sid = (server_id or "").strip()
     if not sid:
         return False, "server id is required"
@@ -3601,6 +3806,15 @@ def config_add_server(server_id, command, args=None, env=None):
         return False, f"'{PRIMARY_SERVER_ID}' is the primary server and cannot be edited"
     if not (command or "").strip():
         return False, "a command is required"
+    if confirm is not True:
+        return False, ("starting a new MCP server must be confirmed from the RoLink "
+                       "settings page (no model-initiated server spawns)")
+    if not allow_shell and not _spawn_spec_is_plain(command):
+        return False, ("command contains shell metacharacters or path traversal - "
+                       "provide a plain launcher (program + args)")
+    for a in (args or []):
+        if not _spawn_spec_is_plain(a):
+            return False, f"argument contains shell metacharacters: {a!r}"
     with CONFIG_LOCK:
         cfg = _read_config()
         spec = {"command": command.strip(), "args": list(args or [])}
@@ -5151,7 +5365,25 @@ async def broadcast_status():
 
 
 async def handler(ws):
-    peer = getattr(ws, "remote_address", ("?",))[0]
+    peer = getattr(ws, "remote_address", (("?",),))[0] if getattr(ws, "remote_address", None) else "?"
+    # ── Origin guard (see _ALLOWED_ORIGINS above) ───────────────────────────
+    # A page the user merely visited must never reach Studio. The browser sets
+    # Origin and page JS cannot forge it, so this is the load-bearing check.
+    try:
+        req = getattr(ws, "request", None)
+        origin = (req.headers.get("Origin") if req is not None else None)
+    except Exception:
+        origin = None
+    if not origin_allowed(origin):
+        log(f"REJECTED websocket from origin {origin!r} ({peer}) - not a RoLink provider",
+            "rd", terminal=False)
+        await _reject_ws(ws, 1008, "origin not allowed")
+        return
+    if not token_ok(_token_from_ws(ws)):
+        log(f"REJECTED websocket: missing/incorrect token ({peer}) - "
+            f"set the token in the RoLink options page", "rd", terminal=False)
+        await _reject_ws(ws, 1008, "token required")
+        return
     clients.add(ws)
     log(f"extension connected  ({peer})  [{len(clients)} client(s)]", "gr")
     try:
@@ -5292,7 +5524,9 @@ async def handler(ws):
                     ok, err = await asyncio.to_thread(
                         config_add_server,
                         msg.get("server_id"), msg.get("command"),
-                        msg.get("args"), msg.get("env"))
+                        msg.get("args"), msg.get("env"),
+                        msg.get("confirm") is True,
+                        msg.get("allow_shell") is True)
                 else:
                     ok, err = await asyncio.to_thread(
                         config_remove_server, msg.get("server_id"))
@@ -5853,11 +6087,36 @@ class _QueueHandler(__import__("http.server", fromlist=["BaseHTTPRequestHandler"
         self.send_response(code)
         self.send_header("Content-Type", "application/json")
         self.send_header("Content-Length", str(len(body)))
+        # Deliberately NO Access-Control-Allow-Origin: a browser page must not
+        # be able to read any response body from this port. Only the Studio
+        # plugin (HttpService) and the extension talk to it, and neither needs
+        # CORS. Omitting the header makes cross-origin reads fail closed.
+        self.send_header("Cache-Control", "no-store")
         self.end_headers()
         try:
             self.wfile.write(body)
         except Exception:
             pass
+
+    def _guard(self):
+        """Origin + token gate for every request on the queue port.
+
+        Returns True when the request may proceed. Rejects with 403/401
+        otherwise. Never reveals whether the origin or the token was the
+        problem beyond a coarse code.
+        """
+        origin = self.headers.get("Origin")
+        if not origin_allowed(origin):
+            self._send({"ok": False, "error": "origin not allowed"}, 403)
+            return False
+        if not token_ok(self.headers.get("X-RoLink-Token")):
+            self._send({"ok": False, "error": "token required"}, 401)
+            return False
+        return True
+
+    def do_OPTIONS(self):
+        # No CORS preflight approval: refuse to advertise cross-origin access.
+        self._send({"ok": False, "error": "cross-origin not allowed"}, 403)
 
     def _body(self):
         try:
@@ -5872,10 +6131,18 @@ class _QueueHandler(__import__("http.server", fromlist=["BaseHTTPRequestHandler"
             return {}
 
     def do_GET(self):
+        if not self._guard():
+            return
         from urllib.parse import urlparse, parse_qs
         u = urlparse(self.path)
         qs = parse_qs(u.query or "")
-        if u.path == "/health":
+        if u.path == "/token":
+            # Served for the extension's pairing flow. Safe to expose here:
+            # this response carries no CORS header, so a web page cannot read
+            # the body, and its request would already have failed _guard().
+            self._send({"ok": True, "required": REQUIRE_TOKEN,
+                        "token": BRIDGE_TOKEN if REQUIRE_TOKEN else ""})
+        elif u.path == "/health":
             self._send({"ok": True, "service": "rolink-queue",
                         "tools": len(ROLINK_TOOL_NAMES), "plugin": _plugin_alive()})
         elif u.path == "/queue/next":
@@ -5913,6 +6180,8 @@ class _QueueHandler(__import__("http.server", fromlist=["BaseHTTPRequestHandler"
             self._send({"ok": False, "error": "not found"}, 404)
 
     def do_POST(self):
+        if not self._guard():
+            return
         data = self._body()
         if self.path == "/queue/result":
             cid = data.get("id")
@@ -5961,7 +6230,6 @@ _TOOL_ALIASES = {
     "perf_stats": "get_performance_stats",
     "translate_code": "validate_command",
     "validate_code": "validate_command",
-    "run_sandbox_tests": "run_in_sandbox",
     "run_sandbox_tests": "run_in_sandbox",
     "plan": "plan_game",
     "get_context": "get_context_summary",
@@ -6155,10 +6423,17 @@ async def main():
         log(f"tool catalog: {len(ROLINK_TOOL_NAMES)} extended tools loaded", "gr")
     else:
         action_banner([
-            "The 140-tool catalog did NOT load - only live Studio tools",
+            "The tool catalog did NOT load - only live Studio tools",
             "will be listed. Re-extract the release zip into a CLEAN",
             f"folder (this run: {_CATALOG_ERROR or 'empty catalog'}).",
         ])
+    # Security posture, stated once at boot so it is never a mystery.
+    log(f"browser-origin guard: ON ({len(_ALLOWED_ORIGINS)} provider origins + extensions; "
+        f"non-browser clients allowed)", "gr")
+    if REQUIRE_TOKEN:
+        log("bridge token: REQUIRED (set the token in the RoLink options page)", "gr")
+    else:
+        log("bridge token: off (set ROLINK_REQUIRE_TOKEN=1 to require one)", "dim")
     # Third-party MCP path: embedded Studio queue for the RoLink Studio plugin
     # (no Node needed). Started before the MCP servers so a poll arriving
     # during boot already finds a live queue.
@@ -6398,11 +6673,11 @@ async def main():
             owner = await asyncio.to_thread(_port_owner, PORT)
             who = f" by '{owner[1]}' (pid {owner[0]})" if owner else ""
             log(f"could not start: port {PORT} is already in use{who}.", "rd")
-            log(f"    A previous bridge may still be running, or another app took "
-                f"the port. Close it, then relaunch. To find it:", "yl")
+            log("    A previous bridge may still be running, or another app took "
+                "the port. Close it, then relaunch. To find it:", "yl")
             log(f"      netstat -ano | findstr {PORT}", "yl")
-            log(f"      taskkill /F /PID <the pid from the last column>", "yl")
-            log(f"    Or set a different port before start.bat:  set RL_BRIDGE_PORT=17614", "yl")
+            log("      taskkill /F /PID <the pid from the last column>", "yl")
+            log("    Or set a different port before start.bat:  set RL_BRIDGE_PORT=17614", "yl")
             return
         raise
 

@@ -46,12 +46,36 @@ export const ALLOWED_TOOLS = new Set([
   "translate_code","validate_code",
 ]);
 
+/**
+ * Default-deny, as this file's header always claimed.
+ *
+ * The previous implementation returned true for ANY string matching
+ * /^[a-z_]+$/, which is every tool name that could ever be sent - the allowlist
+ * above was decorative and an unknown tool reached the Studio queue. Tools are
+ * now allowed when they are either on the allowlist or actually registered in
+ * the catalogue, which is the real definition of "a tool RoLink implements".
+ */
 export function isToolAllowed(tool: string): boolean {
-  // Fully functional: allow any canonical in registry (fallback true for execution studio)
-  if(ALLOWED_TOOLS.has(tool)) return true;
-  // Also allow any that looks like valid tool name (prevents stock Assistant parse fail from blocking RoLink)
-  if(/^[a-z_]+$/.test(tool)) return true; // permissive for 119 — security is via sandbox sanitizeCode, not allowlist
-  return false;
+  const name = String(tool || "");
+  if (!name) return false;
+  if (ALLOWED_TOOLS.has(name)) return true;
+  // Registered catalogue tools are allowed even when the literal list above
+  // has not caught up (the list is hand-maintained).
+  return Object.prototype.hasOwnProperty.call(REGISTERED_TOOLS, name);
+}
+
+/**
+ * Registry-backed membership. Populated by registry.ts at import time so this
+ * module keeps no second copy of the tool list.
+ */
+const REGISTERED_TOOLS: Record<string, true> = Object.create(null);
+
+export function registerKnownTools(names: Iterable<string>): void {
+  for (const n of names) REGISTERED_TOOLS[n] = true;
+}
+
+export function knownToolCount(): number {
+  return Object.keys(REGISTERED_TOOLS).length;
 }
 
 export function sanitizeCode(code: string): string {
